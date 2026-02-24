@@ -5,7 +5,7 @@ import parmed as pmd
 
 # Setup of T-MPI, OMP
 t_mpi = 8
-o_mpi = 1
+t_omp = 1
 
 # x-y ratio of one chain
 xyratio = 1.0  # box_y / box_x default 1
@@ -46,7 +46,7 @@ tail_n_cc = 1
 
 # Graft density
 rho = 0.45  # chains/nm^2
-nx = 1  # number of chains in x direction
+nx = 2  # number of chains in x direction
 ny = 2  # number of chains in y direction
 box_x = np.sqrt(nx * ny / rho) * 10  # A
 box_y = np.sqrt(nx * ny / rho) * 10  # A
@@ -421,10 +421,10 @@ insert_restraint_top("grafted_chain.top",
                      linker_indices)
 
 os.system("gmx grompp -f min_vac.mdp -p hardrest_grafted_chain_restraint.top -c grafted_chain_shifted.gro -o min_vac.tpr -r grafted_chain_shifted.gro -maxwarn 2")
-os.system(f"gmx mdrun -deffnm min_vac -ntmpi {t_mpi} -ntomp {o_mpi}")
+os.system(f"gmx mdrun -deffnm min_vac -ntmpi {t_mpi} -ntomp {t_omp} -v")
 
 os.system("gmx grompp -f nvt_vac.mdp -p hardrest_grafted_chain_restraint.top -c min_vac.gro -o nvt_vac.tpr -r grafted_chain_shifted.gro -maxwarn 2")
-os.system(f"gmx mdrun -deffnm nvt_vac -ntmpi {t_mpi} -ntomp {o_mpi}")
+os.system(f"gmx mdrun -deffnm nvt_vac -ntmpi {t_mpi} -ntomp {t_omp} -v")
 
 os.system("gmx solvate -cp nvt_vac.gro -p hardrest_grafted_chain_restraint.top -o grafted_chain_water.gro")
 atoms = read("grafted_chain_water.gro")
