@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Distribution
+dist/
+build/
+
+# GROMACS output files
+*.tpr
+*.trr
+*.xtc
+*.edr
+*.log
+\#*
+step*.pdb
+
+# AMBER output files
+*.rst7
+*.out
+mdinfo
+
+# PACKMOL
+packmol.log
+
+# Intermediate build files
+*.prepi
+*.res
+*.chain
+*.tleap
+*.in
+grafted_chain*.pdb
+grafted_chain*.gro
+grafted_chain*.top
+aligned_chain.pdb
+chain_min_pull.*
+min_vac.*
+nvt_vac.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Never ignore shipped example inputs (mpc.ac, Gaussian .log, config YAMLs)
+!examples/**

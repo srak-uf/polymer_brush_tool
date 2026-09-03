@@ -1,7 +1,54 @@
-# Procedure
-### 1. Geometry optimization
-Gaussianで構造最適化を実施。  
-水系のPolymer brushなら溶媒モデル（PCM, SMD）を用いて水の誘電率で構造最適化するもReasonable。  
+# polymer-brush-tool
+
+表面グラフト型 polymer brush の初期構造を作成し、GROMACS で MD 計算できる状態まで準備するツールです。
+Gaussian の RESP 電荷計算結果から、AMBER (antechamber / prepgen / tleap / sander)、PACKMOL、ParmEd、GROMACS を順に呼び出して、溶媒化済みの `.gro` / `.top` を出力します。
+
+対応トポロジー:
+
+- **linear** — 基板—HEAD—(MID)ₙ—TAIL（片末端グラフト）
+- **loop** — 基板—HEAD—(MID)ₙ—TAIL—基板（両末端グラフト）
+
+## インストール
+
+```bash
+git clone <this repo>
+cd polymer_brush_tool
+pip install -e .          # 開発用途なら pip install -e ".[dev]"
+```
+
+Python 依存: numpy, ase, parmed, pyyaml
+外部ツール（PATH に必要）: AmberTools (`antechamber`, `prepgen`, `tleap`, `sander`, `ambpdb`), `packmol`, GROMACS (`gmx`)
+
+## ディレクトリ構成
+
+```
+src/polymer_brush_tool/
+├── config.py          BrushConfig / MonomerSpec（YAML 読み込み、box 寸法・鎖長の計算）
+├── runner.py          外部コマンド実行ラッパー（失敗時に ExternalToolError）
+├── cli.py             pbuild コマンド
+├── ff/
+│   ├── fragments.py   prepgen 用 .chain ファイル、tleap スクリプト生成
+│   ├── minimize.py    sander による pull 拘束付き最小化
+│   └── topology.py    GROMACS .top へ tip3p include / position_restraints 挿入
+├── structure/
+│   ├── atoms.py       末端原子・リンカー原子のインデックス検索
+│   └── graft.py       PACKMOL による z 軸整列とグリッド配置
+└── workflows/
+    ├── base.py        共通パイプライン（step_* メソッド）
+    ├── linear.py      LinearBrushWorkflow
+    └── loop.py        LoopBrushWorkflow
+01_FF_template/        min_vac.mdp, nvt_vac.mdp と旧スクリプト（後方互換ラッパー）
+02_MD_template/        本計算用 mdp, tip3p.itp, ジョブスクリプト
+examples/              mpc.ac, Gaussian log, 設定ファイルのサンプル
+tests/                 pytest（外部ツール不要）
+```
+
+## 手順
+
+### 1. Gaussian 構造最適化
+
+水系の brush なら PCM / SMD で水の誘電率を使うのが妥当です。
+
 ```
 %chk=hoge.chk
 #P wb97xd/6-311+g(2d,p)
@@ -10,169 +57,107 @@ opt freq
 Gaussian input
 
 1 1
-C                 1.1592610000        0.0057950000        0.0020800000
-H                 1.5136520000       -0.6787130000        0.7775370000
-H                 1.5163810000       -0.3834850000       -0.9552370000
-C                -0.3014250000       -0.0374780000       -0.0074400000
+C   1.1592610000   0.0057950000   0.0020800000
 ...
 ```
 
-### 2. Charge calculation
-構造最適化後の構造に対して電荷計算を実施。  
-力場ごとに決まった計算精度にすべき。GAFFではHF/6-31G(d)。  
+### 2. 電荷計算と antechamber
+
+GAFF では HF/6-31G(d) の RESP 電荷を使います。
+
 ```
 %chk=hoge_resp.chk
 #p hf/6-31g(d) pop=mk iop(6/33=2,6/42=6)
-
-Gaussian input
-
-1 1
-C                 1.1592610000        0.0057950000        0.0020800000
-H                 1.5136520000       -0.6787130000        0.7775370000
-H                 1.5163810000       -0.3834850000       -0.9552370000
-C                -0.3014250000       -0.0374780000       -0.0074400000
-...
-```
-この後にTerminal（Windowsの人はWSL）を立ち上げて、Antechamberを用いてRESP電荷を得る。  
-pdbは後でVESTAを用いてどこを基板との結合、重合点とするかを指定する。  
-```
-antechamber -fi gout -i mpc_pcm_resp.log -fo ac -o mpc.ac -c resp -pf y -at gaff2
-antechamber -fi gout -fo pdb -i mpc_pcm_resp.log -o mpc.pdb -c resp -pf y -at gaff2
 ```
 
-### 3. Chainを生やすためのInput作成
-Linear chainの場合は、prep_chain_linear.pyを用いる。  
-前半部にパラメータを入力する。  
-- 並列計算（ローカルPC用）の並列数の設定。  
-  基本的にt_mpi x t_omp = CPU core数になるように。エラーがでなければ、t_mpiを最大化する。 
-    ```
-    # Setup of T-MPI, OMP
-    t_mpi = 8
-    t_omp = 1
-    ```
-- 基板の縦横比
-    ```
-    # x-y ratio of one chain
-    xyratio = 1.0  # box_y / box_x default 1
-    ```
-
-- Linear polymer -> False, Loop polymer -> True
-    ```
-    flag_loop = False  # True or False
-    ```
-
-- Polymer: 基板-HEAD-MID-MID-....-MID-TAILの構造情報について
-  - HEAD  
-    VESTAでpdfファイルを開き、  
-    - どこの水素を除いてMIDにくっつけるか &rarr; head_omitnames
-    - どこの元素（炭素）とMIDと結合させるか &rarr; head_tailname
-    - HEADからMIDのどのAtomtypeに結合するか &rarr; head_post_tailtype
-    <!-- - MIDと結合するときに除く水素 &rarr; head_termname -->
-    - Head polymerの名前 &rarr; head_resname
-    - 参照するacファイル  &rarr; head_acfile
-    - 主鎖のC-C結合の数 &rarr; head_n_cc
-    ```
-    head_tailname = "C2"
-    head_omitnames = ["H24"]
-    head_post_tailtype = "c3"
-    head_termname = "H1"
-    head_resname = "hmp"
-    head_acfile = "mpc.ac"
-    # Number of C-C from head to tail in HEAD monomer
-    head_n_cc = 1
-    ```
-  - MID  
-    VESTAでpdfファイルを開き、  
-    - どこの元素（炭素）をHEADと結合させるか（HEAD寄り） &rarr; mid_headname
-    - どこの元素（炭素）をTAILと結合させるか（TAIL寄り） &rarr; mid_tailname
-    - どこの水素を除いてくっつけるか &rarr; mid_omitnames　
-    - HEADで結合される先のAtomtypeは何か &rarr; mid_pre_headtype 
-    - TAILで結合される先のAtomtypeは何か &rarr; mid_post_tailtype
-    - MIDの繰り返し数 &rarr; n_mid_repeat_units
-    - MID polymerの名前 &rarr; mid_resname
-    - 参照するacファイル  &rarr; head_acfile
-    - 主鎖のC-C結合の数 &rarr; head_n_cc
-    ```
-    # Definition of MID monomer
-    mid_headname = "C11"
-    mid_tailname = "C2"
-    mid_omitnames = ["H23", "H24"]
-    mid_pre_headtype = "c3"
-    mid_post_tailtype = "c3"
-    n_mid_repeat_units = 12
-    mid_resname = "mmp"
-    mid_acfile = "mpc.ac"
-    mid_n_cc = 1
-    ```
-  - TAIL  
-    TBA...
-    ```
-    # Definition of TAIL monomer
-    tail_headname = "C11"
-    tail_omitnames = ["H23"]
-    tail_pre_headtype = "c3"
-    tail_termname = "H24"
-    tail_resname = "tmp"
-    tail_acfile = "mpc.ac"
-    tail_n_cc = 1
-    ```
-
-  - Graft density  
-    Graft densityを chains/nmで指定して、x方向、y方向に何本生やすか指定するとそれに応じてセルサイズが決定する。
-    ```
-    # Graft density
-    rho = 0.45  # chains/nm^2
-    nx = 1  # number of chains in x direction
-    ny = 2  # number of chains in y direction
-    box_x = np.sqrt(nx * ny / rho) * 10  # A
-    box_y = np.sqrt(nx * ny / rho) * 10  # A
-    ```
-
-  - Polymer chain length  
-    Polymer chainの長さがある程度分かっている &rarr; d_polymer =  *** で指定。  
-    値がなかった以下のコードに従い、自動で算出し割り当て。
-    ```
-    # Polymer chain length
-    d_polymer = None  # nm  or  None  HEAD----(MID)n----TAIL length
-    if d_polymer is None:
-        n_cc_all = (head_n_cc+1) + n_mid_repeat_units * (mid_n_cc+1) + (tail_n_cc+1) + 2
-        d_cc = 1.54  # C-C bond length in Angstrom
-        d_polymer = d_cc * n_cc_all * 0.8
-
-    if flag_loop:
-        n_cc_all = (head_n_cc+1) + n_mid_repeat_units * (mid_n_cc+1) + (tail_n_cc+1) + 2
-        d_cc = 1.54  # C-C bond length in Angstrom
-        d_height = d_cc * n_cc_all * 0.8 / 2
-    ```
-
-### 4. Script実行
-天に祈りを捧げながら計算実行。
+```bash
+antechamber -fi gout -i mpc_pcm_resp.log -fo ac  -o mpc.ac  -c resp -pf y -at gaff2
+antechamber -fi gout -i mpc_pcm_resp.log -fo pdb -o mpc.pdb -c resp -pf y -at gaff2
 ```
-python3 prep_chain_linear.py
+
+`mpc.pdb` を VESTA で開き、結合点や除去する水素の原子名を確認しておきます。
+
+### 3. 設定ファイルの作成
+
+```bash
+pbuild init --topology linear --output my_brush.yaml   # loop なら --topology loop
 ```
-1. うまくいったら
-   ```
-   Please type bottom atom index... 
-   (You can check structure by vesta chain_min_pull.pdb)
-   ```
-    のような指示がでてくるので、指示従い、Indexを入力
-    >> 37
-2. 次に出てくるのは
-   ```
-   Default: Linker RESNAME, ATOMNAME /  HMP H1
-   Type RESNAME1, ATOMNAME1, RESNAME2, ATOMNAME2, ... or type 'y' to accept default
-   ```
-   Linker (基板につっつけるresidue)のRESNAMEと、ATOMNAMEを指定する。  
-   おそらく....(自信なし)、普通のLinear polymerだったらDefault (y)で問題ないが、Loop polymerは逐一指定が必要。
 
-3. 無事に終わったら以下が出力される。  
-   ```
-   Necessary files for GROMACS simulation: 
-     - grafted_chain_water_box.gro
-     - grafted_chain_water_restraint.top
-     - hardrest_grafted_chain_water_restraint.top
-     - tip3p.itp
-   ```
-   grafted_chain_water_box.groをまずはVMDで可視化して問題なさそうだったら次のMD計算のステージへ。  
-   このとき、以下の4点セットを同じディレクトリに入れる必要がある。  
+`examples/linear_config.yaml` / `examples/loop_config.yaml` にコメント付きの例があります。主な項目:
 
+| キー | 意味 |
+|---|---|
+| `n_mid_repeat_units` | MID モノマーの繰り返し数 |
+| `rho`, `nx`, `ny` | グラフト密度 (chains/nm²) と x, y 方向の鎖数。box 寸法はここから自動計算 |
+| `xyratio` | box_y / box_x |
+| `t_mpi`, `t_omp` | `gmx mdrun` の並列数（積が CPU コア数） |
+| `d_polymer`, `d_cc` | 伸長鎖長 (Å)。`null` なら C-C 結合数から自動計算 |
+| `head` / `mid` / `tail` | 各モノマーの `resname`, `ac_file`, 結合原子名 (`headname`, `tailname`), 除去水素 (`omitnames`), 隣接 GAFF 型 (`pre_headtype`, `post_tailtype`), 末端原子 (`termname`), 主鎖 C-C 数 (`n_cc`) |
+| `bottom_atom_index` | 最小化後の鎖で基板側に置く原子の 1-based index。省略時は実行中に対話で入力 |
+| `linker_atoms` | 基板に固定する原子のリスト `[{resname: HMP, atomname: H1}]`。省略時は HEAD の `termname` を既定値として対話で確認 |
+
+### 4. 実行
+
+`mpc.ac` を作業ディレクトリに置いて実行します。
+
+```bash
+pbuild linear --config my_brush.yaml --work-dir ./out_linear
+pbuild loop   --config my_loop.yaml  --work-dir ./out_loop
+```
+
+`--mdp-dir` を省略した場合は `01_FF_template/` の `min_vac.mdp`, `nvt_vac.mdp` を使います。
+
+実行中の対話（設定ファイルで指定していない場合のみ）:
+
+1. `chain_min_pull.pdb` を VESTA で確認し、基板側の原子 index を入力
+2. リンカー原子の指定。linear は既定値 (Enter または `y`) で通常問題なし。loop は HEAD と TAIL の両末端を `HMP,H1,TMP,H24` のように指定
+
+完了すると次のファイルが出力されます。`02_MD_template/tip3p.itp` と合わせて同じディレクトリに置き、`02_MD_template/` の mdp で本計算に進みます。
+
+```
+grafted_chain_water_box.gro
+grafted_chain_water_restraint.top            (soft restraint 10,000 kJ/mol/nm²)
+hardrest_grafted_chain_water_restraint.top   (hard restraint 1,000,000 kJ/mol/nm²)
+tip3p.itp
+```
+
+まず `grafted_chain_water_box.gro` を VMD で可視化して構造を確認してください。
+
+### Python API
+
+```python
+from polymer_brush_tool.config import BrushConfig
+from polymer_brush_tool.workflows import LinearBrushWorkflow
+
+config = BrushConfig.from_yaml("my_brush.yaml")
+wf = LinearBrushWorkflow(config, work_dir="./out_linear")
+wf.run()
+
+# 個別ステップも呼べます
+# wf.step_prepgen(); wf.step_build_chain(); wf.step_amber_minimize(); ...
+```
+
+### 旧スクリプト
+
+`01_FF_template/prep_chain_linear.py` と `prep_chain_loop.py` は残していますが、中身はライブラリを呼ぶ薄いラッパーです。冒頭の変数を編集して `python3 prep_chain_linear.py` としても動作します。
+
+## テスト
+
+外部ツールを必要としない純 Python 部分（設定読み込み、ファイル生成、トポロジー編集）を pytest で検証します。
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+## パイプラインの概要
+
+1. `write_fragment` で HEAD / MID / TAIL の `.chain` を書き、`prepgen` で `.prepi` を生成
+2. `write_tleap` + `tleap` で鎖を重合し `chain.prmtop` / `chain.inpcrd` を出力
+3. `amber_min_with_pull` で末端間距離拘束を掛けて `sander` 最小化（loop は中点拘束を追加）
+4. `align_chain_z` で PACKMOL を使い鎖を z 軸に整列
+5. `graft_brush` で nx × ny のグリッドに鎖を配置
+6. `write_tleap_grafted` + `tleap` で力場を再割り当て、ParmEd で GROMACS 形式へ変換
+7. リンカー原子を z = 0 に揃え、`insert_restraint_top` で position restraints を追加
+8. GROMACS 真空中で最小化 → NVT
+9. `gmx solvate` で TIP3P を充填、`insert_tip3p_top` でトポロジーに include を追加

@@ -1,0 +1,68 @@
+# polymer-brush-tool — loop brush configuration example
+# -------------------------------------------------------
+# MPC loop brush: both chain ends grafted to the substrate.
+#
+# Usage:
+#   1. Copy mpc.ac (from antechamber) to the working directory.
+#   2. Run: pbuild loop --config loop_config.yaml --work-dir ./output_loop
+
+topology: loop
+n_mid_repeat_units: 26     # longer chain than linear (12) so the arch has room
+
+# Graft density and simulation box
+rho: 0.225                 # chains/nm² — half of the linear value (0.45 / 2),
+                           # because each loop occupies two grafting sites
+nx: 2
+ny: 2
+xyratio: 0.5               # rectangular cross-section (box_y = 0.5 * box_x)
+
+# GROMACS parallel execution
+t_mpi: 8
+t_omp: 1
+
+d_cc: 1.54
+d_polymer: null            # auto-calculate; loop height = polymer_length / 2
+
+# -------------------------------------------------------
+# Monomer definitions (same MPC residues as the linear example)
+# -------------------------------------------------------
+
+head:
+  resname: hmp
+  ac_file: mpc.ac
+  termname: H1
+  tailname: C2
+  omitnames: [H24]
+  post_tailtype: c3
+  n_cc: 1
+
+mid:
+  resname: mmp
+  ac_file: mpc.ac
+  headname: C11
+  tailname: C2
+  omitnames: [H23, H24]
+  pre_headtype: c3
+  post_tailtype: c3
+  n_cc: 1
+
+tail:
+  resname: tmp
+  ac_file: mpc.ac
+  termname: H24
+  headname: C11
+  omitnames: [H23]
+  pre_headtype: c3
+  n_cc: 1
+
+# -------------------------------------------------------
+# Interactive prompt overrides
+#
+# For a loop, BOTH ends are linkers — specify HEAD and TAIL terminal atoms.
+# -------------------------------------------------------
+
+# bottom_atom_index: 37
+
+# linker_atoms:
+#   - {resname: HMP, atomname: H1}
+#   - {resname: TMP, atomname: H24}
