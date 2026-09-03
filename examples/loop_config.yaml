@@ -15,13 +15,27 @@ rho: 0.225                 # chains/nm² — half of the linear value (0.45 / 2)
                            # because each loop occupies two grafting sites
 nx: 1
 ny: 2
-xyratio: 0.5               # rectangular cross-section (box_y = 0.5 * box_x)
+xyratio: 0.5               # y/x ratio of the PACKMOL alignment box only;
+                           # the simulation box stays square (box_y = box_x)
 
 # GROMACS thread parallelism (t_mpi * t_omp = CPU cores)
 t_mpi: 8
 t_omp: 1
 
 d_cc: 1.54
+
+# Height (Å) of the linker atoms above the GROMACS wall (z = 0).
+# The linker is covalently bonded to the substrate, so one bond length (1.5 Å)
+# is the default. 0 would put the linker on the wall itself (numerically safe
+# because of wall-r-linpot, but its bonded neighbours end up inside the
+# repulsive core of the 10-4 wall potential).
+linker_height: 1.5
+
+# Water molecules whose oxygen is below this height (Å) after gmx solvate are
+# deleted. gmx solvate ignores the wall and also fills the slab between the wall
+# and the grafting atoms; ~3 Å is the LJ contact distance of water on the c3 wall.
+# Set 0 to keep all water.
+solvent_min_z: 3.0
 
 # For a loop, d_polymer is the HEAD–TAIL separation in Å, i.e. the distance
 # between the two grafting points, NOT the contour length. It is required.

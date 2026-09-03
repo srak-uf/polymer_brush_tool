@@ -23,9 +23,13 @@ class TestBrushConfigGeometry:
     def test_box_y_default_square(self, linear_config):
         assert math.isclose(linear_config.box_y(), linear_config.box_x(), rel_tol=1e-9)
 
-    def test_box_y_xyratio(self, linear_config):
+    def test_box_y_independent_of_xyratio(self, linear_config):
+        # xyratio only affects the PACKMOL alignment box; the simulation box
+        # stays square so the graft density is exactly rho (legacy behaviour).
         linear_config.xyratio = 0.5
-        assert math.isclose(linear_config.box_y(), linear_config.box_x() * 0.5, rel_tol=1e-9)
+        assert math.isclose(linear_config.box_y(), linear_config.box_x(), rel_tol=1e-9)
+        area_nm2 = linear_config.box_x() * linear_config.box_y() / 100
+        assert math.isclose(linear_config.nx * linear_config.ny / area_nm2, linear_config.rho, rel_tol=1e-9)
 
     def test_n_cc_all(self, linear_config):
         # head_n_cc=1, mid_n_cc=1, tail_n_cc=1, n_mid=12

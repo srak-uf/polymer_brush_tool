@@ -79,7 +79,10 @@ class BrushConfig:
     """Number of chains along the y direction."""
 
     xyratio: float = 1.0
-    """Aspect ratio box_y / box_x (default 1.0 = square)."""
+    """Aspect ratio of the PACKMOL *alignment* box used in ``align_chain_z``
+    (y extent = x extent × xyratio).  It does **not** change the simulation
+    box: ``box_y == box_x`` always, so the graft density stays exactly ``rho``
+    (legacy prep_chain_*.py behaviour)."""
 
     # ------------------------------------------------------------------
     # Monomer definitions
@@ -120,6 +123,31 @@ class BrushConfig:
     Atoms pinned to the substrate plane and position-restrained, e.g.
     ``[{"resname": "HMP", "atomname": "H1"}]``.  When None the HEAD
     terminal atom is offered as the default in an interactive prompt.
+    """
+
+    linker_height: float = 1.5
+    """
+    Height (Å) of the linker atoms above the GROMACS wall at z = 0.
+
+    The linker is treated as covalently bonded to the substrate, so the
+    default is a bond length (1.5 Å) rather than 0.  Sitting exactly on the
+    wall is numerically harmless thanks to ``wall-r-linpot``, but it puts
+    the linker's bonded neighbours inside the repulsive core of the 10-4
+    wall potential; ~1.5 Å keeps them in the attractive region.  This value
+    is preserved through solvation (``gmx editconf -noc``), so the position
+    restraint reference and the wall geometry stay consistent.
+    """
+
+    solvent_min_z: float = 3.0
+    """
+    Water molecules whose oxygen lies below this height (Å) after
+    ``gmx solvate`` are deleted.
+
+    ``gmx solvate`` fills the whole box, including the slab between the wall
+    (z = 0) and the grafting atoms.  3.0 Å is roughly the LJ contact distance
+    of a TIP3P oxygen on the c3 wall (σ ≈ 3.27 Å); nothing physical fits
+    between the wall and that height, so such water would only be pushed out
+    through the brush during equilibration.  Set to 0 to keep all water.
     """
 
     # ------------------------------------------------------------------
@@ -198,6 +226,10 @@ class BrushConfig:
                     raise ConfigError(
                         f"linker_atoms[{i}] must have 'resname' and 'atomname' keys"
                     )
+        if self.linker_height < 0:
+            raise ConfigError("linker_height must be >= 0 (Å above the wall at z = 0)")
+        if self.solvent_min_z < 0:
+            raise ConfigError("solvent_min_z must be >= 0 (Å above the wall at z = 0)")
 
     # ------------------------------------------------------------------
     # Derived geometry
@@ -208,8 +240,13 @@ class BrushConfig:
         return float(np.sqrt(self.nx * self.ny / self.rho) * 10)
 
     def box_y(self) -> float:
-        """Simulation box length along y in Ångström."""
-        return self.box_x() * self.xyratio
+        """Simulation box length along y in Ångström.
+
+        Equal to :meth:`box_x`; the box cross-section is always square so
+        that ``nx * ny / (box_x * box_y)`` equals ``rho``.  ``xyratio`` only
+        shapes the PACKMOL alignment box, exactly as in the legacy scripts.
+        """
+        return self.box_x()
 
     def n_cc_all(self) -> int:
         """Total number of backbone C-C bonds in the full chain."""

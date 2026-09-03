@@ -132,3 +132,57 @@ def copy_molecules_section(src_top: str | Path, dst_top: str | Path) -> None:
     _, src_mol = _split(src_lines)
     dst_head, _ = _split(dst_lines)
     Path(dst_top).write_text("".join(dst_head + src_mol))
+
+
+def set_molecule_count(top: str | Path, name: str, count: int) -> None:
+    """Set the count of molecule *name* in the ``[ molecules ]`` section of *top*.
+
+    Used after water molecules are deleted from the ``gmx solvate`` output so
+    that ``SOL  N`` matches the coordinate file again.
+
+    Raises
+    ------
+    ValueError
+        If the section or the molecule line is missing.
+    """
+    path = Path(top)
+    lines = path.read_text().splitlines(keepends=True)
+    in_mol = False
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("["):
+            in_mol = s == "[ molecules ]"
+            continue
+        if in_mol and s and not s.startswith(";") and s.split()[0] == name:
+            lines[i] = f"{name:<16s} {count}\n"
+            path.write_text("".join(lines))
+            return
+    raise ValueError(f"no '{name}' line in [ molecules ] of {path}")
+
+
+def remove_molecule(top: str | Path, name: str) -> int:
+    """Delete every ``name`` line from the ``[ molecules ]`` section of *top*.
+
+    ``gmx solvate -p`` *appends* ``SOL  N``; when ``step_solvate`` is re-run
+    on a topology that already carries a ``SOL`` line the counts would add
+    up.  Calling this first makes the step idempotent.
+
+    Returns
+    -------
+    int
+        Number of lines removed (0 if none, no error).
+    """
+    path = Path(top)
+    lines = path.read_text().splitlines(keepends=True)
+    out, in_mol, removed = [], False, 0
+    for line in lines:
+        s = line.strip()
+        if s.startswith("["):
+            in_mol = s == "[ molecules ]"
+        elif in_mol and s and not s.startswith(";") and s.split()[0] == name:
+            removed += 1
+            continue
+        out.append(line)
+    if removed:
+        path.write_text("".join(out))
+    return removed

@@ -21,7 +21,7 @@ antechamber  → mpc.ac (GAFF2 原子タイプ + RESP 電荷)   ← 手作業
 [4] PACKMOL      鎖を z 軸方向に立てる (aligned_chain.pdb)
 [5] PACKMOL      nx × ny 本を格子状に配置 (grafted_chain.pdb)
 [6] tleap+ParmEd 多本系に力場を割り当て GROMACS 形式へ (grafted_chain.top / .gro)
-[7] Python       リンカー原子を z=0 に揃え、position restraints を追加
+[7] Python       リンカー原子を z=1.5 Å（linker_height）に揃え、position restraints を追加
 [8] gmx          真空中で最小化 + 短い NVT（鎖の重なりをほどく）
 [9] gmx solvate  TIP3P 水で充填、ボックス高さを調整
       │
@@ -136,12 +136,14 @@ AMBER の NMR 拘束（`nmropt=1`, `DISANG`）を使います:
 
 ```
 box_x = sqrt(nx·ny / rho) × 10   [Å]
-box_y = box_x × xyratio
+box_y = box_x                     （常に正方形。xyratio は関与しない）
 ```
 
 各鎖は格子セルの中心 `((ix+0.5)·box_x/nx, (iy+0.5)·box_y/ny)` に、回転も z 移動もなし（`fixed x y 0 0 0 0`）で置かれ、PDB の chain ID を A, B, C, … と振ります。箱の高さは鎖の z 方向の広がり + 30 Å。
 
-`xyratio` を 1 以外にすると 1 本あたりの占有面積が長方形になります。loop では 2 つのグラフト点が並ぶ方向に長くなるよう 0.5 を使っています。
+`xyratio` は [4] の PACKMOL 整列箱の縦横比にのみ使われ、シミュレーション箱の寸法やグラフト密度は変えません（旧スクリプトと同じ挙動）。loop 例で nx=1, ny=2 とすると、正方形の箱の中で 1 本あたりの占有面積が y 方向に半分の長方形になります。
+
+**注意:** `gmx grompp` は箱の最短辺が `2 × rlist`（同梱 mdp では 2.8 nm）より短いとエラーになります。`sqrt(nx·ny/rho)` が 2.8 nm 以上になるよう `nx`, `ny`, `rho` を選んでください。
 
 ### [6] tleap + ParmEd — 多本系の力場と GROMACS 変換 (`write_tleap_grafted`)
 
@@ -152,7 +154,10 @@ ParmEd は同一分子をまとめるため、`[ moleculetype ]` は 1 つで `[
 ### [7] リンカー原子の固定と position restraints (`step_position_restraints`)
 
 1. **リンカー原子**（基板に結合している原子）を決めます。既定は HEAD の `termname`。loop では HEAD と TAIL の両方を `linker_atoms` で指定します。
-2. 系全体の最小 z を求め、リンカー原子の z をその値に揃えてから、全体を平行移動して基板面を z = 0 にします（`grafted_chain_shifted.gro`）。
+2. 系全体の最小 z を求め、リンカー原子の z をその値に揃えてから、全体を平行移動してリンカー原子が z = `linker_height`（既定 1.5 Å）に来るようにします（`grafted_chain_shifted.gro`）。
+   GROMACS の wall は z = 0 にあるので、`linker_height` は「グラフト原子と基板面の距離」です。基板と共有結合しているとみなして結合長相当の 1.5 Å を既定にしています。
+   z = 0 に置いても `wall-r-linpot = 0.3` のおかげで数値的には壊れませんが、リンカーに結合した C 原子（1〜2 Å 上）が 10-4 wall ポテンシャルの斥力芯に入り、
+   常に約 300 kJ/mol/nm の反発を受け続けるため、soft restraint の本計算では鎖の根元が持ち上がる方向に働きます。1.5 Å ならこれを避けられます。
 3. `[ position_restraints ]` を `[ system ]` の直前に挿入し、2 種類の topology を書きます:
 
 | ファイル | 力の定数 (kJ/mol/nm²) | 用途 |
@@ -173,9 +178,10 @@ PACKMOL が並べただけの鎖同士の接触や歪みをほどくため、har
 
 ### [9] 溶媒充填 (`step_solvate`)
 
-1. `gmx solvate -cp nvt_vac.gro -p hardrest_...top` で TIP3P を充填。`-p` を渡した topology には `SOL  N` が追記されます。
+1. `gmx solvate -cp nvt_vac.gro -p hardrest_...top` で TIP3P を充填（`grafted_chain_water_raw.gro`）。`-p` を渡した topology には `SOL  N` が追記されます。
+   `gmx solvate` は wall を知らないので、wall (z = 0) とグラフト原子の間のスラブにも水を置きます。O が `solvent_min_z`（既定 3.0 Å ≈ 水と c3 wall の LJ 接触距離）より低い水分子を削除して `grafted_chain_water.gro` とし、`SOL  N` を書き直します。
 2. 同じ `[ molecules ]` ブロックを soft 側 topology にもコピーします（**旧スクリプトではここが抜けており、soft 側 topology は原子数不一致で grompp が通らない状態でした**）。
-3. 箱の高さを +4 Å して `grafted_chain_water_box.gro` を作ります。
+3. 箱の高さを +4 Å して `grafted_chain_water_box.gro` を作ります。`gmx editconf -box` は既定で系を箱の中心に寄せ直してしまう（リンカーが z = `linker_height` から浮く）ため、`-noc` を付けて座標は動かしません。
 4. 両 topology の `[ moleculetype ]` の直前に `#include "tip3p.itp"` を挿入し、`tip3p.itp` を作業ディレクトリにコピーします。
 
 ---
@@ -185,7 +191,7 @@ PACKMOL が並べただけの鎖同士の接触や歪みをほどくため、har
 作業ディレクトリに最終的に必要なのは次の 4 点です。
 
 ```
-grafted_chain_water_box.gro                  座標（溶媒込み、基板面 z=0）
+grafted_chain_water_box.gro                  座標（溶媒込み、wall z=0、リンカー z=linker_height）
 grafted_chain_water_restraint.top            soft restraint (10,000)
 hardrest_grafted_chain_water_restraint.top   hard restraint (1,000,000)
 tip3p.itp
@@ -212,13 +218,15 @@ tip3p.itp
 | `n_mid_repeat_units` | MID の繰り返し数 | 12 | 26 |
 | `rho` | グラフト密度 chains/nm² | 0.45 | 0.225 |
 | `nx`, `ny` | x, y 方向の鎖数 | 2, 2 | 1, 2 |
-| `xyratio` | box_y / box_x | 1.0 | 0.5 |
+| `xyratio` | PACKMOL 整列箱の y/x 比（シミュレーション箱には影響しない） | 1.0 | 0.5 |
 | `d_cc` | 主鎖 C–C 結合長 Å | 1.54 | 1.54 |
 | `d_polymer` | sander の HEAD–TAIL 拘束距離 Å | null（自動: 伸長鎖長） | **14.9（必須）** |
 | `t_mpi`, `t_omp` | `gmx mdrun -ntmpi/-ntomp` | 8, 1 | 8, 1 |
 | `head`/`mid`/`tail` | 残基定義（§3 [1] 参照） | | |
 | `bottom_atom_index` | [4] で基板側に置く原子（1-based） | 対話 | 対話 |
-| `linker_atoms` | [7] で z=0 に固定・拘束する原子 | HEAD の termname | 対話（HEAD と TAIL を指定） |
+| `linker_atoms` | [7] で基板面に固定・拘束する原子 | HEAD の termname | 対話（HEAD と TAIL を指定） |
+| `linker_height` | [7] でリンカー原子を置く wall からの高さ Å | 1.5 | 1.5 |
+| `solvent_min_z` | [9] でこの高さ (Å) 未満の水を削除 | 3.0 | 3.0 |
 
 `examples/linear_config.yaml`, `examples/loop_config.yaml` にコメント付きの完全な例があります。`pbuild init --topology loop` で同じものが生成されます。
 
@@ -276,3 +284,5 @@ wf.step_align_z()             # 1 ステップだけ
 | loop の `d_polymer` | スクリプト内で 14.9 を直書き | YAML で必須項目として明示（未指定はエラー） |
 | PACKMOL 入力のパス | カレント前提 | 作業ディレクトリ相対に統一（長い絶対パスは PACKMOL の文字数制限に掛かるため） |
 | コード重複 | linear / loop で 6 関数を丸ごとコピー | 共通化。差分は sander 拘束の有無のみ |
+| リンカーの高さ | z = 0（wall 上）に置き、溶媒化後の `editconf -box` の再センタリングで約 3 Å 浮いていた | `linker_height`（既定 1.5 Å）に明示配置し、`editconf -noc` で溶媒化後も保持 |
+| wall 直上の水 | `gmx solvate` が wall とグラフト点の間に置いた水がそのまま残っていた | `solvent_min_z`（既定 3.0 Å）未満の水を削除し `SOL N` を修正 |

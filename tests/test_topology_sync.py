@@ -74,3 +74,39 @@ class TestBundledTemplates:
         pkg = (resources.files("polymer_brush_tool") / "templates" / pkg_name).read_text()
         repo = (REPO / repo_path).read_text()
         assert pkg == repo, f"{pkg_name} differs from {repo_path}; re-copy it"
+
+
+class TestSetMoleculeCount:
+    def test_sol_count_rewritten(self, tmp_path):
+        from polymer_brush_tool.ff.topology import set_molecule_count
+        top = tmp_path / "hard.top"
+        top.write_text(_HARD)
+        set_molecule_count(top, "SOL", 1200)
+        text = top.read_text()
+        assert "SOL              1200" in text and "SOL  1234" not in text
+        assert "mol  4" in text                     # other molecules untouched
+
+    def test_missing_line_raises(self, tmp_path):
+        from polymer_brush_tool.ff.topology import set_molecule_count
+        top = tmp_path / "soft.top"
+        top.write_text(_SOFT)
+        with pytest.raises(ValueError, match="SOL"):
+            set_molecule_count(top, "SOL", 1)
+
+
+class TestRemoveMolecule:
+    def test_removes_all_sol_lines(self, tmp_path):
+        from polymer_brush_tool.ff.topology import remove_molecule
+        top = tmp_path / "hard.top"
+        top.write_text(_HARD + "SOL  99\n")
+        assert remove_molecule(top, "SOL") == 2
+        text = top.read_text()
+        assert "SOL" not in text and "mol  4" in text
+        assert text.count("[ moleculetype ]") == 1     # earlier sections untouched
+
+    def test_no_sol_is_noop(self, tmp_path):
+        from polymer_brush_tool.ff.topology import remove_molecule
+        top = tmp_path / "soft.top"
+        top.write_text(_SOFT)
+        assert remove_molecule(top, "SOL") == 0
+        assert top.read_text() == _SOFT

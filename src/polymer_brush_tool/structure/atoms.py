@@ -78,3 +78,41 @@ def find_linker_indices(
         ]
         indices.extend(matched)
     return indices
+
+
+def pin_linkers_to_substrate(
+    atoms: "Atoms",
+    linker_indices: list[int],
+    height: float = 1.5,
+) -> "Atoms":
+    """Translate the system so the linker atoms sit at ``z = height`` (Å).
+
+    Every linker atom is first moved onto the lowest z of the whole system,
+    then the system is shifted rigidly so that plane lands at ``z = height``.
+    Nothing else about the geometry changes.  The GROMACS wall is at z = 0,
+    so *height* is the distance between the grafting atoms and the wall.
+
+    Parameters
+    ----------
+    atoms:
+        ASE Atoms object; modified in place and returned.
+    linker_indices:
+        0-based indices of the grafting atoms (one or more per chain).
+    height:
+        Target z (Å) of the linker atoms.  Must be >= 0.
+
+    Returns
+    -------
+    Atoms
+        The same object, for chaining.
+    """
+    if not linker_indices:
+        raise ValueError("linker_indices must not be empty")
+    if height < 0:
+        raise ValueError("height must be >= 0")
+    pos = atoms.get_positions()
+    min_z = pos[:, 2].min()
+    pos[linker_indices, 2] = min_z
+    pos[:, 2] += height - min_z
+    atoms.set_positions(pos)
+    return atoms

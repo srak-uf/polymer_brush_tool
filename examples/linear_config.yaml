@@ -13,7 +13,7 @@ n_mid_repeat_units: 12
 rho: 0.45          # chains/nm²
 nx: 2              # chains along x
 ny: 2              # chains along y
-xyratio: 1.0       # square cross-section (box_y = box_x)
+xyratio: 1.0       # y/x ratio of the PACKMOL alignment box only (simulation box is always square)
 
 # GROMACS parallel execution (t_mpi × t_omp = number of CPU cores)
 t_mpi: 8
@@ -21,6 +21,19 @@ t_omp: 1
 
 # C-C backbone bond length (Å)
 d_cc: 1.54
+
+# Height (Å) of the linker atoms above the GROMACS wall (z = 0).
+# The linker is covalently bonded to the substrate, so one bond length (1.5 Å)
+# is the default. 0 would put the linker on the wall itself (numerically safe
+# because of wall-r-linpot, but its bonded neighbours end up inside the
+# repulsive core of the 10-4 wall potential).
+linker_height: 1.5
+
+# Water molecules whose oxygen is below this height (Å) after gmx solvate are
+# deleted. gmx solvate ignores the wall and also fills the slab between the wall
+# and the grafting atoms; ~3 Å is the LJ contact distance of water on the c3 wall.
+# Set 0 to keep all water.
+solvent_min_z: 3.0
 
 # HEAD–TAIL restraint distance (Å) for the sander stretch.
 # null = auto-calculate the extended contour length (d_cc * n_cc_all * 0.8).

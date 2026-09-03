@@ -151,3 +151,95 @@ class TestGraftBrushInput:
         assert "chain A" in text
         assert "chain B" in text
         assert "chain C" not in text
+
+
+# --------------------------------------------------------------------------
+# pin_linkers_to_substrate
+# --------------------------------------------------------------------------
+
+class TestPinLinkersToSubstrate:
+    def _atoms(self):
+        from ase import Atoms
+        # two "chains": linker atoms 0 and 3 at slightly different heights,
+        # a non-linker atom (2) is the lowest point of the system
+        return Atoms("H4", positions=[[0, 0, 5.0], [0, 0, 8.0], [1, 1, 4.0], [3, 3, 5.5]])
+
+    def test_default_height_is_bond_length(self):
+        from polymer_brush_tool.structure.atoms import pin_linkers_to_substrate
+        atoms = pin_linkers_to_substrate(self._atoms(), [0, 3])
+        z = atoms.get_positions()[:, 2]
+        assert z[0] == pytest.approx(1.5)
+        assert z[3] == pytest.approx(1.5)
+
+    def test_rigid_shift_preserves_other_atoms(self):
+        from polymer_brush_tool.structure.atoms import pin_linkers_to_substrate
+        atoms = pin_linkers_to_substrate(self._atoms(), [0, 3], height=1.5)
+        z = atoms.get_positions()[:, 2]
+        # min_z was 4.0 (atom 2): linkers moved onto that plane, whole system +(1.5 - 4.0)
+        assert z[1] == pytest.approx(8.0 - 4.0 + 1.5)
+        assert z[2] == pytest.approx(1.5)
+        assert atoms.get_positions()[1, :2].tolist() == [0, 0]
+
+    def test_height_zero_puts_linkers_on_wall(self):
+        from polymer_brush_tool.structure.atoms import pin_linkers_to_substrate
+        atoms = pin_linkers_to_substrate(self._atoms(), [0, 3], height=0.0)
+        assert atoms.get_positions()[[0, 3], 2] == pytest.approx([0.0, 0.0])
+
+    def test_rejects_bad_input(self):
+        from polymer_brush_tool.structure.atoms import pin_linkers_to_substrate
+        with pytest.raises(ValueError):
+            pin_linkers_to_substrate(self._atoms(), [])
+        with pytest.raises(ValueError):
+            pin_linkers_to_substrate(self._atoms(), [0], height=-1.0)
+
+
+# --------------------------------------------------------------------------
+# remove_water_below
+# --------------------------------------------------------------------------
+
+_GRO = """\
+brush
+    9
+    1HMP     C1    1   0.100   0.100   0.150
+    1HMP     H1    2   0.100   0.100   0.250
+    2SOL     OW    3   0.500   0.500   0.020
+    2SOL    HW1    4   0.500   0.500   0.110
+    2SOL    HW2    5   0.560   0.500   0.050
+    3SOL     OW    6   1.000   1.000   0.600
+    3SOL    HW1    7   1.000   1.000   0.690
+    3SOL    HW2    8   1.060   1.000   0.630
+    4SOL     OW    9   1.500   1.500   0.290
+   2.98100   2.98100   6.30700
+"""
+
+
+class TestRemoveWaterBelow:
+    def test_removes_low_water_and_renumbers(self, tmp_path):
+        from polymer_brush_tool.structure.solvent import remove_water_below
+        src = tmp_path / "in.gro"; dst = tmp_path / "out.gro"
+        src.write_text(_GRO)
+        kept, removed = remove_water_below(src, dst, z_min=3.0)
+        assert (kept, removed) == (1, 2)          # OW at 0.2 Å and 2.9 Å removed, 6.0 Å kept
+        lines = dst.read_text().splitlines()
+        assert lines[0] == "brush"
+        assert int(lines[1]) == 5
+        atom_lines = lines[2:7]
+        assert [l[5:10].strip() for l in atom_lines] == ["HMP", "HMP", "SOL", "SOL", "SOL"]
+        assert [int(l[15:20]) for l in atom_lines] == [1, 2, 3, 4, 5]
+        assert atom_lines[2][36:44].strip() == "0.600"
+        assert lines[-1].strip() == "2.98100   2.98100   6.30700"
+
+    def test_zero_threshold_keeps_everything(self, tmp_path):
+        from polymer_brush_tool.structure.solvent import remove_water_below
+        src = tmp_path / "in.gro"
+        src.write_text(_GRO)
+        kept, removed = remove_water_below(src, src, z_min=0.0)
+        assert (kept, removed) == (3, 0)
+        assert src.read_text().splitlines()[1].strip() == "9"
+
+    def test_polymer_below_threshold_untouched(self, tmp_path):
+        from polymer_brush_tool.structure.solvent import remove_water_below
+        src = tmp_path / "in.gro"; dst = tmp_path / "out.gro"
+        src.write_text(_GRO)
+        remove_water_below(src, dst, z_min=100.0)
+        assert "HMP" in dst.read_text() and "SOL" not in dst.read_text()

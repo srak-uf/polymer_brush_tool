@@ -59,3 +59,28 @@ def test_example_configs_load_and_validate():
     assert lin.topology == "linear" and lin.d_polymer is None
     assert loop.topology == "loop" and loop.d_polymer == 14.9
     assert (loop.nx, loop.ny, loop.xyratio) == (1, 2, 0.5)
+
+
+def test_linker_height_default_is_bond_length(linear_config):
+    assert linear_config.linker_height == 1.5
+
+
+def test_linker_height_negative_rejected(linear_config):
+    cfg = dataclasses.replace(linear_config, linker_height=-0.1)
+    with pytest.raises(ConfigError, match="linker_height"):
+        cfg.validate()
+
+
+def test_example_configs_set_linker_height():
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    for name in ("linear_config.yaml", "loop_config.yaml"):
+        cfg = BrushConfig.from_yaml(repo / "examples" / name)
+        assert cfg.linker_height == 1.5
+
+
+def test_solvent_min_z_default_and_validation(linear_config):
+    assert linear_config.solvent_min_z == 3.0
+    cfg = dataclasses.replace(linear_config, solvent_min_z=-1.0)
+    with pytest.raises(ConfigError, match="solvent_min_z"):
+        cfg.validate()

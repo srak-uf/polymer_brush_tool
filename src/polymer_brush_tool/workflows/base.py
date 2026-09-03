@@ -17,7 +17,7 @@ from polymer_brush_tool import runner
 from polymer_brush_tool.config import BrushConfig
 from polymer_brush_tool.ff import fragments, minimize, topology
 from polymer_brush_tool.structure import atoms as atom_utils
-from polymer_brush_tool.structure import graft
+from polymer_brush_tool.structure import graft, solvent
 
 _TEMPLATE_FILES = ("min_vac.mdp", "nvt_vac.mdp", "tip3p.itp")
 
@@ -253,7 +253,8 @@ class BrushWorkflowBase:
         return [{"resname": s["resname"].upper(), "atomname": s["atomname"]} for s in specs]
 
     def step_position_restraints(self) -> None:
-        """Pin linker atoms to z = 0, shift the system, write soft/hard restraint topologies."""
+        """Pin linker atoms to z = linker_height, shift the system, write soft/hard restraint topologies."""
+        cfg = self.config
         print("\n=== Step 7: linker atoms, z-shift, position restraints ===")
         atoms = self._read("grafted_chain_center.gro")
         specs = self._resolve_linker_specs()
@@ -262,14 +263,13 @@ class BrushWorkflowBase:
         if not linker_0:
             raise ValueError(f"No atoms matched linker specification {specs}")
 
-        min_z = atoms.get_positions()[:, 2].min()
-        for i in linker_0:
-            atoms.positions[i, 2] = min_z      # put every linker exactly on the substrate plane
-        atoms.positions[:, 2] -= min_z         # substrate plane → z = 0
+        # Linkers are covalently bonded to the substrate: place them one bond
+        # length above the wall (z = 0) instead of on it.
+        atom_utils.pin_linkers_to_substrate(atoms, linker_0, height=cfg.linker_height)
         self._write("grafted_chain_shifted.gro", atoms)
 
         linker_1 = [i + 1 for i in linker_0]
-        print(f"Linker atom indices (1-based): {linker_1}")
+        print(f"Linker atom indices (1-based): {linker_1}, placed at z = {cfg.linker_height} Å")
         topology.insert_restraint_top(
             self.work_dir / "grafted_chain.top",
             self.work_dir / "grafted_chain_restraint.top",
@@ -302,21 +302,35 @@ class BrushWorkflowBase:
 
     def step_solvate(self) -> None:
         """Solvate with TIP3P, extend the box in z, finalise both topologies."""
+        cfg = self.config
         print("\n=== Step 9: solvation (gmx solvate) ===")
         hard = "hardrest_grafted_chain_restraint.top"
         soft = "grafted_chain_restraint.top"
 
-        # gmx solvate appends "SOL N" to the topology passed with -p.
-        self._run(f"gmx solvate -cp nvt_vac.gro -p {hard} -o grafted_chain_water.gro")
+        # gmx solvate appends "SOL N" to the topology passed with -p; drop any
+        # SOL line left by an earlier run so that re-running this step is safe.
+        topology.remove_molecule(self.work_dir / hard, "SOL")
+        self._run(f"gmx solvate -cp nvt_vac.gro -p {hard} -o grafted_chain_water_raw.gro")
+        # gmx solvate ignores the wall at z = 0 and also fills the slab below
+        # the grafting atoms; delete that water and fix the SOL count.
+        kept, removed = solvent.remove_water_below(
+            self.work_dir / "grafted_chain_water_raw.gro",
+            self.work_dir / "grafted_chain_water.gro",
+            cfg.solvent_min_z,
+        )
+        print(f"Removed {removed} water molecules with O below z = {cfg.solvent_min_z} Å ({kept} kept)")
+        topology.set_molecule_count(self.work_dir / hard, "SOL", kept)
         # The soft topology must carry the same [ molecules ] block.
         topology.copy_molecules_section(self.work_dir / hard, self.work_dir / soft)
 
         cell = self._read("grafted_chain_water.gro").cell
         La, Lb = cell[0, 0] / 10, cell[1, 1] / 10
         Lc = (cell[2, 2] + 4) / 10                 # +4 Å vacuum gap above the water
+        # -noc: editconf re-centres the system when -box is given, which would
+        # lift the linkers off z = linker_height.  Keep the coordinates as they are.
         self._run(
             f"gmx editconf -f grafted_chain_water.gro -box {La:.6f} {Lb:.6f} {Lc:.6f}"
-            f" -o grafted_chain_water_box.gro"
+            f" -noc -o grafted_chain_water_box.gro"
         )
 
         topology.insert_tip3p_top(self.work_dir / soft, self.work_dir / "grafted_chain_water_restraint.top")

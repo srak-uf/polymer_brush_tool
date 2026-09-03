@@ -71,3 +71,6 @@ Thumbs.db
 
 # Never ignore shipped example inputs (mpc.ac, Gaussian .log, config YAMLs)
 !examples/**
+
+# Bundled package templates must never be ignored
+!src/polymer_brush_tool/templates/**

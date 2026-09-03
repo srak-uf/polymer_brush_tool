@@ -89,9 +89,11 @@ pbuild init --topology linear --output my_brush.yaml   # loop なら --topology 
 |---|---|
 | `n_mid_repeat_units` | MID モノマーの繰り返し数 |
 | `rho`, `nx`, `ny` | グラフト密度 (chains/nm²) と x, y 方向の鎖数。box 寸法はここから自動計算 |
-| `xyratio` | box_y / box_x |
+| `xyratio` | PACKMOL で鎖を z 軸に整列させる際の細長い箱の y/x 比。シミュレーション箱は常に正方形（box_y = box_x）で密度は `rho` のまま |
 | `t_mpi`, `t_omp` | `gmx mdrun` の並列数（積が CPU コア数） |
 | `d_polymer`, `d_cc` | sander 最小化で HEAD–TAIL 末端間に掛ける拘束距離 (Å)。linear は `null` で伸長鎖長を自動計算。**loop では 2 つのグラフト点の間隔を明示指定（旧スクリプトは 14.9）** |
+| `linker_height` | リンカー原子を置く wall (z = 0) からの高さ (Å)。基板と共有結合しているとみなし既定は結合長相当の 1.5 |
+| `solvent_min_z` | `gmx solvate` 後にこの高さ (Å) より低い水を削除。既定 3.0（水と c3 wall の LJ 接触距離）。0 で削除しない |
 | `head` / `mid` / `tail` | 各モノマーの `resname`, `ac_file`, 結合原子名 (`headname`, `tailname`), 除去水素 (`omitnames`), 隣接 GAFF 型 (`pre_headtype`, `post_tailtype`), 末端原子 (`termname`), 主鎖 C-C 数 (`n_cc`) |
 | `bottom_atom_index` | 最小化後の鎖で基板側に置く原子の 1-based index。省略時は実行中に対話で入力 |
 | `linker_atoms` | 基板に固定する原子のリスト `[{resname: HMP, atomname: H1}]`。省略時は HEAD の `termname` を既定値として対話で確認 |
@@ -162,6 +164,6 @@ pytest
 4. `align_chain_z` で PACKMOL を使い鎖を z 軸に整列
 5. `graft_brush` で nx × ny のグリッドに鎖を配置
 6. `write_tleap_grafted` + `tleap` で力場を再割り当て、ParmEd で GROMACS 形式へ変換
-7. リンカー原子を z = 0 に揃え、`insert_restraint_top` で position restraints を追加
+7. リンカー原子を z = `linker_height`（既定 1.5 Å）に揃え、`insert_restraint_top` で position restraints を追加
 8. GROMACS 真空中で最小化 → NVT
-9. `gmx solvate` で TIP3P を充填、`insert_tip3p_top` でトポロジーに include を追加
+9. `gmx solvate` で TIP3P を充填、wall とグラフト点の間（z < `solvent_min_z`）の水を削除、`insert_tip3p_top` でトポロジーに include を追加
