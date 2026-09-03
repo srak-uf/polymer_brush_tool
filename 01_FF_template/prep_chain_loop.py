@@ -61,10 +61,12 @@ tail_n_cc          = 1
 
 # グラフト密度（ループは両端固定なので実効密度を半分に）
 rho = 0.45 / 2          # chains/nm²
-nx = 2
+nx = 1
 ny = 2
 
-d_polymer = None
+# ループでは d_polymer は HEAD–TAIL 間距離 (Å) ＝ 2 つのグラフト点の間隔。
+# 伸長鎖長ではないので None（自動計算）にしないこと。
+d_polymer = 14.9
 d_cc      = 1.54
 
 bottom_atom_index = None

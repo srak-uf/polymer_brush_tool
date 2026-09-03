@@ -5,28 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from polymer_brush_tool.config import BrushConfig
-from polymer_brush_tool.ff import minimize
-from polymer_brush_tool.structure.atoms import find_atom_index
 from polymer_brush_tool.workflows.base import BrushWorkflowBase
 
 
 class LoopBrushWorkflow(BrushWorkflowBase):
-    """Complete preparation pipeline for a loop polymer brush system.
+    """Preparation pipeline for a loop brush: substrate—HEAD—(MID)ₙ—TAIL—substrate.
 
-    The chain topology is: substrate──HEAD──(MID)ₙ──TAIL──substrate
-    (both ends grafted to the surface).
-
-    Three AMBER NMR distance restraints are applied during minimisation:
-    head–tail, head–mid, and mid–tail, to model the arch/loop geometry.
-
-    Parameters
-    ----------
-    config:
-        Brush configuration.  ``config.topology`` must be ``"loop"``.
-    work_dir:
-        Output directory.
-    mdp_dir:
-        Directory containing the GROMACS MDP template files.
+    The sander stretch uses three restraints: HEAD–TAIL at
+    ``config.d_polymer`` (the separation of the two grafting points, which
+    must be given explicitly) and HEAD–MID / MID–TAIL at
+    ``config.loop_height()`` to raise the arch.  Both terminal atoms should
+    be listed in ``config.linker_atoms``.
     """
 
     def __init__(
@@ -37,55 +26,6 @@ class LoopBrushWorkflow(BrushWorkflowBase):
     ) -> None:
         if config.topology != "loop":
             raise ValueError(
-                f"LoopBrushWorkflow requires topology='loop', "
-                f"got {config.topology!r}."
+                f"LoopBrushWorkflow requires topology='loop', got {config.topology!r}."
             )
         super().__init__(config, work_dir, mdp_dir)
-
-    # ------------------------------------------------------------------
-    # Step 3 – AMBER minimisation (loop variant)
-    # ------------------------------------------------------------------
-
-    def step_amber_minimize(self) -> None:
-        """Run AMBER sander with head–tail + head–mid + mid–tail constraints."""
-        from ase.io import read
-
-        cfg = self.config
-        print("\n=== Step 3: AMBER minimisation with pull constraint (loop) ===")
-
-        chain_pdb = self.work_dir / "chain.pdb"
-        atoms = read(str(chain_pdb))
-
-        head_idx_0 = find_atom_index(
-            atoms, cfg.head.termname, cfg.head.resname.upper()
-        )
-        tail_idx_0 = find_atom_index(
-            atoms, cfg.tail.termname, cfg.tail.resname.upper()
-        )
-
-        minimize.amber_min_with_pull(
-            self.work_dir / "chain.prmtop",
-            self.work_dir / "chain.inpcrd",
-            file_prefix="chain",
-            head_idx=head_idx_0 + 1,   # 1-based for AMBER
-            tail_idx=tail_idx_0 + 1,
-            polymer_length=cfg.polymer_length(),
-            loop_height=cfg.loop_height(),  # activates loop restraints
-            work_dir=self.work_dir,
-        )
-
-    # ------------------------------------------------------------------
-    # Full pipeline
-    # ------------------------------------------------------------------
-
-    def run(self) -> None:
-        """Execute the complete loop brush preparation pipeline."""
-        self.step_prepgen()
-        self.step_build_chain()
-        self.step_amber_minimize()
-        self.step_align_z()
-        self.step_graft()
-        self.step_assign_ff_grafted()
-        self.step_position_restraints()
-        self.step_vacuum_relax()
-        self.step_solvate()

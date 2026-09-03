@@ -8,10 +8,16 @@ amber_min_with_pull
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
 from polymer_brush_tool import runner
+
+
+def _rel(path: str | Path, work_dir: Path) -> str:
+    """Path of *path* relative to *work_dir* (all tools run with cwd=work_dir)."""
+    return os.path.relpath(Path(path).resolve(), work_dir.resolve())
 
 
 def amber_min_with_pull(
@@ -24,107 +30,79 @@ def amber_min_with_pull(
     *,
     loop_height: Optional[float] = None,
     work_dir: Path = Path("."),
-) -> None:
-    """Run AMBER sander gas-phase minimisation with end-to-end distance restraints.
+) -> Path:
+    """Run AMBER sander gas-phase minimisation with distance restraints.
 
-    Writes a NMR-style distance restraint file and a sander minimisation
-    input file, then executes sander and converts the output to PDB with
-    ``ambpdb``.
+    Writes an NMR-style distance restraint file and a sander minimisation
+    input, runs sander, then converts the result to PDB with ``ambpdb``.
 
     Parameters
     ----------
-    prmtop:
-        AMBER topology file produced by tleap.
-    inpcrd:
-        AMBER coordinate file produced by tleap.
+    prmtop, inpcrd:
+        AMBER topology / coordinates produced by tleap.
     file_prefix:
-        Prefix used for all intermediate file names (e.g. ``"chain"``
-        produces ``chain_min_pull.in``, ``chain_min_pull.rst7``, etc.).
-    head_idx:
-        1-based atom index of the HEAD terminal atom.
-    tail_idx:
-        1-based atom index of the TAIL terminal atom.
+        Prefix for intermediate files (``<prefix>_min_pull.{in,out,rst7,pdb}``).
+    head_idx, tail_idx:
+        1-based atom indices of the HEAD and TAIL terminal atoms.
     polymer_length:
-        Target end-to-end distance in Ångström for the linear stretch
-        restraint (r3).  r2 = 0.8 * r3, r4 = 1.2 * r3.
+        Target HEAD–TAIL distance r3 in Å.  The flat-bottom well is
+        r2 = 0.8·r3 … r4 = 1.2·r3 with rk2 = rk3 = 1000.7 kcal/mol/Å².
     loop_height:
-        When provided, additional mid-point restraints are added to model
-        a loop topology.  The value sets the target height in Ångström.
+        When given, two extra restraints (HEAD–MID and MID–TAIL, where MID
+        is the atom with index ``(head_idx + tail_idx) // 2``) pull the
+        chain centre away from the grafting points to form an arch.
     work_dir:
-        Working directory for all files.
-    """
-    work_dir = Path(work_dir)
+        Working directory; all file names inside the inputs are written
+        relative to it because sander is executed with ``cwd=work_dir``.
 
-    # -- Distance restraint file ------------------------------------------
-    restraint_path = work_dir / "pull_termination.restraint"
-    with open(restraint_path, mode="w") as fh:
-        r3 = polymer_length
-        r2 = 0.8 * r3
-        r4 = 1.2 * r3
+    Returns
+    -------
+    Path
+        Path to ``<prefix>_min_pull.pdb``.
+    """
+    work_dir = Path(work_dir).resolve()
+
+    def _rst_block(fh, i, j, r3):
+        r2, r4 = 0.8 * r3, 1.2 * r3
         fh.write("&rst\n")
         fh.write(
-            f"iat={head_idx},{tail_idx},"
-            f"r1=0., r2={r2:.4f}, r3={r3:.4f}, r4={r4:.4f},"
-            f"rk2=1000.7, rk3=1000.7,\n"
+            f"  iat={i},{j}, r1=0., r2={r2:.4f}, r3={r3:.4f}, r4={r4:.4f},"
+            f" rk2=1000.7, rk3=1000.7,\n"
         )
         fh.write("/\n")
 
+    # -- Distance restraint file ------------------------------------------
+    restraint_name = "pull_termination.restraint"
+    with open(work_dir / restraint_name, mode="w") as fh:
+        _rst_block(fh, head_idx, tail_idx, polymer_length)
         if loop_height is not None:
-            r3_loop = loop_height
-            r2_loop = 0.8 * r3_loop
-            r4_loop = 1.2 * r3_loop
             mid_idx = (head_idx + tail_idx) // 2
+            _rst_block(fh, mid_idx, tail_idx, loop_height)
+            _rst_block(fh, head_idx, mid_idx, loop_height)
 
-            fh.write("&rst\n")
-            fh.write(
-                f"iat={mid_idx},{tail_idx},"
-                f"r1=0., r2={r2_loop:.4f}, r3={r3_loop:.4f}, r4={r4_loop:.4f},"
-                f"rk2=1000.7, rk3=1000.7,\n"
-            )
-            fh.write("/\n")
-
-            fh.write("&rst\n")
-            fh.write(
-                f"iat={head_idx},{mid_idx},"
-                f"r1=0., r2={r2_loop:.4f}, r3={r3_loop:.4f}, r4={r4_loop:.4f},"
-                f"rk2=1000.7, rk3=1000.7,\n"
-            )
-            fh.write("/\n")
-
-    # -- sander minimisation input file ------------------------------------
-    min_in_path = work_dir / f"{file_prefix}_min_pull.in"
-    with open(min_in_path, mode="w") as fh:
+    # -- sander minimisation input ----------------------------------------
+    min_in = f"{file_prefix}_min_pull.in"
+    with open(work_dir / min_in, mode="w") as fh:
         fh.write("Minimize\n")
         fh.write("&cntrl\n")
-        fh.write("imin=1,\n")
-        fh.write("ntb=0,\n")
-        fh.write("ntx=1,\n")
-        fh.write("irest=0,\n")
-        fh.write("maxcyc=50000,\n")
-        fh.write("ncyc=1000,\n")
-        fh.write("ntpr=100,\n")
-        fh.write("ntwx=0,\n")
-        fh.write("cut=999.0,\n")
-        fh.write("nmropt=1,\n")
+        fh.write("  imin=1, ntb=0, ntx=1, irest=0,\n")
+        fh.write("  maxcyc=50000, ncyc=1000,\n")
+        fh.write("  ntpr=100, ntwx=0, cut=999.0,\n")
+        fh.write("  nmropt=1,\n")
         fh.write("/\n")
         fh.write("&wt type='END' /\n")
-        fh.write(f"DISANG=pull_termination.restraint\n")
+        fh.write(f"DISANG={restraint_name}\n")
 
-    # -- Run sander -------------------------------------------------------
-    rst7_path = work_dir / f"{file_prefix}_min_pull.rst7"
+    prmtop_rel = _rel(prmtop, work_dir)
+    inpcrd_rel = _rel(inpcrd, work_dir)
+    rst7 = f"{file_prefix}_min_pull.rst7"
+    pdb = f"{file_prefix}_min_pull.pdb"
+
     runner.run(
-        f"sander -O"
-        f" -i {min_in_path}"
-        f" -o {work_dir / (file_prefix + '_min_pull.out')}"
-        f" -p {prmtop}"
-        f" -c {inpcrd}"
-        f" -r {rst7_path}",
+        f"sander -O -i {min_in} -o {file_prefix}_min_pull.out"
+        f" -p {prmtop_rel} -c {inpcrd_rel} -r {rst7}",
         cwd=work_dir,
     )
+    runner.run(f"ambpdb -p {prmtop_rel} -c {rst7} > {pdb}", cwd=work_dir)
 
-    # -- Convert rst7 → PDB -----------------------------------------------
-    pdb_path = work_dir / f"{file_prefix}_min_pull.pdb"
-    runner.run(
-        f"ambpdb -p {prmtop} -c {rst7_path} > {pdb_path}",
-        cwd=work_dir,
-    )
+    return work_dir / pdb

@@ -103,3 +103,32 @@ def insert_restraint_top(
 
     _write(output_top, 10_000)
     _write(hardrest_top, 1_000_000)
+
+
+def copy_molecules_section(src_top: str | Path, dst_top: str | Path) -> None:
+    """Replace the ``[ molecules ]`` section of *dst_top* with the one from *src_top*.
+
+    ``gmx solvate -p`` appends the water count (``SOL  N``) to the topology it
+    is given.  The soft- and hard-restraint topologies are otherwise
+    identical, so after solvating with one of them the other must receive the
+    same ``[ molecules ]`` block or ``grompp`` will reject it for an atom-count
+    mismatch.
+
+    Parameters
+    ----------
+    src_top:
+        Topology whose ``[ molecules ]`` section is authoritative.
+    dst_top:
+        Topology to update in place.
+    """
+    def _split(lines: list[str]) -> tuple[list[str], list[str]]:
+        for i, line in enumerate(lines):
+            if line.strip() == "[ molecules ]":
+                return lines[:i], lines[i:]
+        raise ValueError("no [ molecules ] section found")
+
+    src_lines = Path(src_top).read_text().splitlines(keepends=True)
+    dst_lines = Path(dst_top).read_text().splitlines(keepends=True)
+    _, src_mol = _split(src_lines)
+    dst_head, _ = _split(dst_lines)
+    Path(dst_top).write_text("".join(dst_head + src_mol))

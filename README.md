@@ -91,7 +91,7 @@ pbuild init --topology linear --output my_brush.yaml   # loop なら --topology 
 | `rho`, `nx`, `ny` | グラフト密度 (chains/nm²) と x, y 方向の鎖数。box 寸法はここから自動計算 |
 | `xyratio` | box_y / box_x |
 | `t_mpi`, `t_omp` | `gmx mdrun` の並列数（積が CPU コア数） |
-| `d_polymer`, `d_cc` | 伸長鎖長 (Å)。`null` なら C-C 結合数から自動計算 |
+| `d_polymer`, `d_cc` | sander 最小化で HEAD–TAIL 末端間に掛ける拘束距離 (Å)。linear は `null` で伸長鎖長を自動計算。**loop では 2 つのグラフト点の間隔を明示指定（旧スクリプトは 14.9）** |
 | `head` / `mid` / `tail` | 各モノマーの `resname`, `ac_file`, 結合原子名 (`headname`, `tailname`), 除去水素 (`omitnames`), 隣接 GAFF 型 (`pre_headtype`, `post_tailtype`), 末端原子 (`termname`), 主鎖 C-C 数 (`n_cc`) |
 | `bottom_atom_index` | 最小化後の鎖で基板側に置く原子の 1-based index。省略時は実行中に対話で入力 |
 | `linker_atoms` | 基板に固定する原子のリスト `[{resname: HMP, atomname: H1}]`。省略時は HEAD の `termname` を既定値として対話で確認 |
@@ -105,7 +105,11 @@ pbuild linear --config my_brush.yaml --work-dir ./out_linear
 pbuild loop   --config my_loop.yaml  --work-dir ./out_loop
 ```
 
-`--mdp-dir` を省略した場合は `01_FF_template/` の `min_vac.mdp`, `nvt_vac.mdp` を使います。
+`--mdp-dir` を省略した場合はパッケージ同梱の `min_vac.mdp`, `nvt_vac.mdp`, `tip3p.itp`（`01_FF_template/`, `02_MD_template/` と同一内容）を使います。
+
+途中で外部ツールが失敗した場合は、原因を直してから `--start <step>` で途中から再開できます（例: `--start step_graft`）。ステップ名は `pbuild linear --help` を参照してください。
+
+処理内容の詳細な解説は [docs/PIPELINE.md](docs/PIPELINE.md) にあります。
 
 実行中の対話（設定ファイルで指定していない場合のみ）:
 

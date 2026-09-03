@@ -117,9 +117,13 @@ class TestBrushConfigFromYaml:
             "nx": 1,
             "ny": 1,
             "bottom_atom_index": 37,
-            "head": {"resname": "hmp", "ac_file": "x.ac", "omitnames": ["H1"]},
-            "mid": {"resname": "mmp", "ac_file": "x.ac", "omitnames": ["H1", "H2"]},
-            "tail": {"resname": "tmp", "ac_file": "x.ac", "omitnames": ["H1"]},
+            "head": {"resname": "hmp", "ac_file": "x.ac", "omitnames": ["H1"],
+                     "termname": "H9", "tailname": "C2", "post_tailtype": "c3"},
+            "mid": {"resname": "mmp", "ac_file": "x.ac", "omitnames": ["H1", "H2"],
+                    "headname": "C1", "tailname": "C2",
+                    "pre_headtype": "c3", "post_tailtype": "c3"},
+            "tail": {"resname": "tmp", "ac_file": "x.ac", "omitnames": ["H1"],
+                     "termname": "H8", "headname": "C1", "pre_headtype": "c3"},
         }
         yaml_path = self._write_yaml(tmp_path, data)
         cfg = BrushConfig.from_yaml(yaml_path)

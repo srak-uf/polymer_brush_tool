@@ -1,8 +1,16 @@
-"""Shared workflow logic for polymer brush system preparation."""
+"""Shared workflow logic for polymer brush system preparation.
+
+The pipeline is split into ``step_*`` methods so that a run can be resumed
+or inspected between stages.  Every external tool is executed with
+``cwd=self.work_dir`` and every file name written into a tool input is
+relative to that directory; :attr:`work_dir` is therefore resolved to an
+absolute path once, in ``__init__``.
+"""
 
 from __future__ import annotations
 
 import shutil
+from importlib import resources
 from pathlib import Path
 
 from polymer_brush_tool import runner
@@ -11,6 +19,13 @@ from polymer_brush_tool.ff import fragments, minimize, topology
 from polymer_brush_tool.structure import atoms as atom_utils
 from polymer_brush_tool.structure import graft
 
+_TEMPLATE_FILES = ("min_vac.mdp", "nvt_vac.mdp", "tip3p.itp")
+
+
+def package_template_dir() -> Path:
+    """Directory holding the mdp/itp templates shipped inside the package."""
+    return Path(resources.files("polymer_brush_tool") / "templates")
+
 
 class BrushWorkflowBase:
     """Base class shared by :class:`LinearBrushWorkflow` and :class:`LoopBrushWorkflow`.
@@ -18,14 +33,13 @@ class BrushWorkflowBase:
     Parameters
     ----------
     config:
-        Complete configuration object for the simulation system.
+        Complete configuration object; ``config.validate()`` is called.
     work_dir:
         Directory where all intermediate and output files are written.
-        Created if it does not exist.
+        The antechamber ``.ac`` files named in the config must be there.
     mdp_dir:
-        Directory containing the GROMACS MDP template files
-        (``min_vac.mdp``, ``nvt_vac.mdp``).  Defaults to the
-        ``01_FF_template`` directory next to this package.
+        Directory containing ``min_vac.mdp``, ``nvt_vac.mdp`` and
+        ``tip3p.itp``.  Defaults to the templates bundled with the package.
     """
 
     def __init__(
@@ -34,114 +48,140 @@ class BrushWorkflowBase:
         work_dir: str | Path = ".",
         mdp_dir: str | Path | None = None,
     ) -> None:
+        config.validate()
         self.config = config
-        self.work_dir = Path(work_dir)
+        self.work_dir = Path(work_dir).resolve()
         self.work_dir.mkdir(parents=True, exist_ok=True)
-
-        if mdp_dir is None:
-            # Default: 01_FF_template next to the installed package tree
-            pkg_root = Path(__file__).parent.parent.parent.parent
-            mdp_dir = pkg_root / "01_FF_template"
-        self.mdp_dir = Path(mdp_dir)
+        self.mdp_dir = Path(mdp_dir).resolve() if mdp_dir else package_template_dir()
 
     # ------------------------------------------------------------------
-    # Step 1 – Fragment and prepi files
+    # helpers
+    # ------------------------------------------------------------------
+
+    def _run(self, cmd: str, **kw) -> None:
+        runner.run(cmd, cwd=self.work_dir, **kw)
+
+    def _read(self, name: str):
+        from ase.io import read
+        return read(str(self.work_dir / name))
+
+    def _write(self, name: str, atoms) -> None:
+        from ase.io import write
+        write(str(self.work_dir / name), atoms)
+
+    def _copy_template(self, name: str) -> None:
+        dst = self.work_dir / name
+        if dst.exists():
+            return
+        src = self.mdp_dir / name
+        if not src.exists():
+            src = package_template_dir() / name
+        shutil.copy(src, dst)
+
+    # ------------------------------------------------------------------
+    # Step 1 – .chain files and prepgen
     # ------------------------------------------------------------------
 
     def step_prepgen(self) -> None:
-        """Write ``.chain`` files and run ``prepgen`` for HEAD, MID, and TAIL."""
+        """Write ``.chain`` connectivity files and run ``prepgen`` for HEAD, MID, TAIL."""
         cfg = self.config
-        head, mid, tail = cfg.head, cfg.mid, cfg.tail
+        print("\n=== Step 1: prepgen (HEAD / MID / TAIL .prepi) ===")
 
-        print("\n=== Step 1: Generating prepi files via prepgen ===")
+        for spec in (cfg.head, cfg.mid, cfg.tail):
+            ac = self.work_dir / spec.ac_file
+            if not ac.exists():
+                raise FileNotFoundError(
+                    f"{spec.resname}: AC file not found: {ac}. "
+                    f"Run antechamber first and place the .ac file in the work directory."
+                )
 
-        # HEAD – only a tail side (bonds to MID)
         fragments.write_fragment(
-            head.resname,
-            tailname=head.tailname,
-            omitnames=head.omitnames,
-            post_tailtype=head.post_tailtype,
+            cfg.head.resname,
+            tailname=cfg.head.tailname,
+            omitnames=cfg.head.omitnames,
+            post_tailtype=cfg.head.post_tailtype,
+            work_dir=self.work_dir,
+        )
+        fragments.write_fragment(
+            cfg.mid.resname,
+            headname=cfg.mid.headname,
+            tailname=cfg.mid.tailname,
+            omitnames=cfg.mid.omitnames,
+            pre_headtype=cfg.mid.pre_headtype,
+            post_tailtype=cfg.mid.post_tailtype,
+            work_dir=self.work_dir,
+        )
+        fragments.write_fragment(
+            cfg.tail.resname,
+            headname=cfg.tail.headname,
+            omitnames=cfg.tail.omitnames,
+            pre_headtype=cfg.tail.pre_headtype,
             work_dir=self.work_dir,
         )
 
-        # MID – both head and tail sides
-        fragments.write_fragment(
-            mid.resname,
-            headname=mid.headname,
-            tailname=mid.tailname,
-            omitnames=mid.omitnames,
-            pre_headtype=mid.pre_headtype,
-            post_tailtype=mid.post_tailtype,
-            work_dir=self.work_dir,
-        )
-
-        # TAIL – only a head side (bonds to MID)
-        fragments.write_fragment(
-            tail.resname,
-            headname=tail.headname,
-            omitnames=tail.omitnames,
-            pre_headtype=tail.pre_headtype,
-            work_dir=self.work_dir,
-        )
-
-        for label, spec in [("HEAD", head), ("MID", mid), ("TAIL", tail)]:
-            print(f"\n** Generating {label} monomer prepi file... **")
-            runner.run(
-                f"prepgen -i {spec.ac_file}"
-                f" -o {spec.resname}.prepi"
-                f" -f prepi"
-                f" -m {spec.resname}.chain"
-                f" -rn {spec.resname.upper()}"
-                f" -rf {spec.resname}.res",
-                cwd=self.work_dir,
+        for spec in (cfg.head, cfg.mid, cfg.tail):
+            self._run(
+                f"prepgen -i {spec.ac_file} -o {spec.resname}.prepi -f prepi"
+                f" -m {spec.resname}.chain -rn {spec.resname.upper()}"
+                f" -rf {spec.resname}.res"
             )
 
     # ------------------------------------------------------------------
-    # Step 2 – Build chain with tleap
+    # Step 2 – tleap chain build
     # ------------------------------------------------------------------
 
     def step_build_chain(self) -> None:
-        """Write tleap script and build the polymer chain topology."""
+        """Polymerise HEAD + MID×n + TAIL with tleap → chain.prmtop / chain.inpcrd / chain.pdb."""
         cfg = self.config
-        print("\n=== Step 2: Building polymer chain with tleap ===")
+        print("\n=== Step 2: tleap chain build ===")
         fragments.write_tleap(
-            cfg.head.resname,
-            cfg.mid.resname,
-            cfg.tail.resname,
-            cfg.n_mid_repeat_units,
+            cfg.head.resname, cfg.mid.resname, cfg.tail.resname,
+            cfg.n_mid_repeat_units, work_dir=self.work_dir,
+        )
+        self._run("tleap -f build_chain.tleap")
+        # ASE round-trip normalises the PDB written by tleap.
+        self._write("chain.pdb", self._read("chain.pdb"))
+
+    # ------------------------------------------------------------------
+    # Step 3 – sander minimisation
+    # ------------------------------------------------------------------
+
+    def _terminal_indices_1based(self) -> tuple[int, int]:
+        cfg = self.config
+        atoms = self._read("chain.pdb")
+        head = atom_utils.find_atom_index(atoms, cfg.head.termname, cfg.head.resname.upper())
+        tail = atom_utils.find_atom_index(atoms, cfg.tail.termname, cfg.tail.resname.upper())
+        return head + 1, tail + 1
+
+    def step_amber_minimize(self) -> None:
+        """Stretch the chain with restrained sander minimisation → chain_min_pull.pdb."""
+        cfg = self.config
+        print(f"\n=== Step 3: sander minimisation with restraints ({cfg.topology}) ===")
+        head_idx, tail_idx = self._terminal_indices_1based()
+        minimize.amber_min_with_pull(
+            self.work_dir / "chain.prmtop",
+            self.work_dir / "chain.inpcrd",
+            file_prefix="chain",
+            head_idx=head_idx,
+            tail_idx=tail_idx,
+            polymer_length=cfg.polymer_length(),
+            loop_height=cfg.loop_height() if cfg.topology == "loop" else None,
             work_dir=self.work_dir,
         )
-        runner.run("tleap -f build_chain.tleap", cwd=self.work_dir)
-
-        # Re-write PDB to normalise formatting (ASE round-trip)
-        from ase.io import read, write
-        chain_pdb = self.work_dir / "chain.pdb"
-        write(str(chain_pdb), read(str(chain_pdb)))
 
     # ------------------------------------------------------------------
-    # Step 3 – AMBER minimisation (implemented by subclass)
-    # ------------------------------------------------------------------
-
-    def step_amber_minimize(self) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    # ------------------------------------------------------------------
-    # Step 4 – Z-axis alignment (interactive if index not in config)
+    # Step 4 – z alignment
     # ------------------------------------------------------------------
 
     def step_align_z(self) -> None:
-        """Align the minimised chain along z using PACKMOL."""
+        """Orient the stretched chain along z with its bottom atom at the substrate."""
         cfg = self.config
-        print("\n=== Step 4: Z-axis alignment via PACKMOL ===")
-
+        print("\n=== Step 4: z-axis alignment (PACKMOL) ===")
         bottom_idx = cfg.bottom_atom_index
         if bottom_idx is None:
-            print(
-                "Please enter the bottom atom index "
-                "(inspect chain_min_pull.pdb in VESTA, 1-based index):"
-            )
-            bottom_idx = int(input())
-
+            print("Enter the 1-based index of the bottom (grafting) atom.")
+            print(f"  (inspect {self.work_dir / 'chain_min_pull.pdb'} in VESTA)")
+            bottom_idx = int(input("> "))
         graft.align_chain_z(
             self.work_dir / "chain_min_pull.pdb",
             bottom_idx,
@@ -150,52 +190,37 @@ class BrushWorkflowBase:
         )
 
     # ------------------------------------------------------------------
-    # Step 5 – Graft brush
+    # Step 5 – graft
     # ------------------------------------------------------------------
 
     def step_graft(self) -> None:
-        """Place nx × ny chains on a 2-D grid with PACKMOL."""
+        """Place nx × ny chains on the grafting grid (PACKMOL) → grafted_chain.pdb."""
         cfg = self.config
-        print("\n=== Step 5: Grafting polymer brushes ===")
+        print("\n=== Step 5: graft chains on grid (PACKMOL) ===")
         graft.graft_brush(
             self.work_dir / "aligned_chain.pdb",
-            cfg.box_x(),
-            cfg.box_y(),
-            cfg.nx,
-            cfg.ny,
+            cfg.box_x(), cfg.box_y(), cfg.nx, cfg.ny,
             work_dir=self.work_dir,
         )
 
     # ------------------------------------------------------------------
-    # Step 6 – Force-field assignment for grafted system
+    # Step 6 – force field for grafted system, convert to GROMACS
     # ------------------------------------------------------------------
 
     def step_assign_ff_grafted(self) -> None:
-        """Run tleap on the multi-chain PDB to assign GAFF2 parameters."""
-        from ase.io import read
+        """tleap on the multi-chain PDB, ParmEd → .top/.gro, then centre with editconf."""
         import parmed as pmd
 
         cfg = self.config
-        print("\n=== Step 6: Force-field assignment for grafted brush ===")
-
-        grafted_pdb = self.work_dir / "grafted_chain.pdb"
-        atoms = read(str(grafted_pdb))
-        La, Lb, Lc = (
-            atoms.cell[0, 0],
-            atoms.cell[1, 1],
-            atoms.cell[2, 2],
-        )
-
+        print("\n=== Step 6: force field for grafted system, AMBER → GROMACS ===")
+        cell = self._read("grafted_chain.pdb").cell
         fragments.write_tleap_grafted(
-            cfg.head.resname,
-            cfg.mid.resname,
-            cfg.tail.resname,
-            La, Lb, Lc,
+            cfg.head.resname, cfg.mid.resname, cfg.tail.resname,
+            cell[0, 0], cell[1, 1], cell[2, 2],
             work_dir=self.work_dir,
         )
-        runner.run("tleap -f grafted_chain.tleap", cwd=self.work_dir)
+        self._run("tleap -f grafted_chain.tleap")
 
-        # Convert AMBER topology → GROMACS
         parm = pmd.load_file(
             str(self.work_dir / "grafted_chain.prmtop"),
             xyz=str(self.work_dir / "grafted_chain.inpcrd"),
@@ -203,173 +228,139 @@ class BrushWorkflowBase:
         parm.save(str(self.work_dir / "grafted_chain.top"), overwrite=True)
         parm.save(str(self.work_dir / "grafted_chain.gro"), overwrite=True)
 
-        # Centre the box
-        runner.run(
-            f"gmx editconf"
-            f" -f {self.work_dir / 'grafted_chain.gro'}"
-            f" -c"
-            f" -o {self.work_dir / 'grafted_chain_center.gro'}",
-        )
+        self._run("gmx editconf -f grafted_chain.gro -c -o grafted_chain_center.gro")
 
     # ------------------------------------------------------------------
-    # Step 7 – Shift to bottom and add position restraints
+    # Step 7 – linker atoms, shift, position restraints
     # ------------------------------------------------------------------
 
-    def step_position_restraints(self) -> None:
-        """Shift chains to z=0, identify linker atoms, write restraint topology."""
-        from ase.io import read, write
-
+    def _resolve_linker_specs(self) -> list[dict]:
         cfg = self.config
-        print("\n=== Step 7: Position restraints and chain shifting ===")
-
-        grafted_atoms = read(str(self.work_dir / "grafted_chain_center.gro"))
-
-        # Resolve linker atoms (interactive if not specified in config)
+        default = [{"resname": cfg.head.resname.upper(), "atomname": cfg.head.termname}]
         if cfg.linker_atoms is not None:
-            linker_specs = cfg.linker_atoms
+            specs = cfg.linker_atoms
         else:
-            default_resname = cfg.head.resname.upper()
-            default_atomname = cfg.head.termname
-            print(
-                f"Default linker: resname={default_resname}, atomname={default_atomname}"
-            )
-            print(
-                "Enter RESNAME1,ATOMNAME1,RESNAME2,ATOMNAME2,... "
-                "or press Enter / type 'y' to accept default:"
-            )
-            ans = input().strip()
+            print(f"Default linker: {default[0]['resname']} {default[0]['atomname']}")
+            print("Enter RESNAME1,ATOMNAME1,RESNAME2,ATOMNAME2,... or press Enter / 'y' for default")
+            ans = input("> ").strip()
             if ans.lower() in ("", "y"):
-                linker_specs = [
-                    {"resname": default_resname, "atomname": default_atomname}
-                ]
+                specs = default
             else:
                 parts = [p.strip() for p in ans.split(",")]
-                linker_specs = [
-                    {"resname": parts[i], "atomname": parts[i + 1]}
-                    for i in range(0, len(parts), 2)
-                ]
+                if len(parts) % 2:
+                    raise ValueError("linker input must be RESNAME,ATOMNAME pairs")
+                specs = [{"resname": parts[i], "atomname": parts[i + 1]} for i in range(0, len(parts), 2)]
+        return [{"resname": s["resname"].upper(), "atomname": s["atomname"]} for s in specs]
 
-        # 0-based indices
-        linker_0based = atom_utils.find_linker_indices(grafted_atoms, linker_specs)
-        print(f"Linker atom indices (0-based): {linker_0based}")
+    def step_position_restraints(self) -> None:
+        """Pin linker atoms to z = 0, shift the system, write soft/hard restraint topologies."""
+        print("\n=== Step 7: linker atoms, z-shift, position restraints ===")
+        atoms = self._read("grafted_chain_center.gro")
+        specs = self._resolve_linker_specs()
 
-        # Shift all atoms so the minimum z is at 0
-        min_z = grafted_atoms.get_positions()[:, 2].min()
-        # Pin linker atoms exactly to z=0
-        for i in linker_0based:
-            grafted_atoms.positions[i, 2] = min_z
-        grafted_atoms.positions[:, 2] -= min_z
+        linker_0 = atom_utils.find_linker_indices(atoms, specs)
+        if not linker_0:
+            raise ValueError(f"No atoms matched linker specification {specs}")
 
-        shifted_gro = self.work_dir / "grafted_chain_shifted.gro"
-        write(str(shifted_gro), grafted_atoms)
+        min_z = atoms.get_positions()[:, 2].min()
+        for i in linker_0:
+            atoms.positions[i, 2] = min_z      # put every linker exactly on the substrate plane
+        atoms.positions[:, 2] -= min_z         # substrate plane → z = 0
+        self._write("grafted_chain_shifted.gro", atoms)
 
-        # 1-based indices for GROMACS topology
-        linker_1based = [i + 1 for i in linker_0based]
-        print(f"Linker atom indices (1-based, for topology): {linker_1based}")
-
+        linker_1 = [i + 1 for i in linker_0]
+        print(f"Linker atom indices (1-based): {linker_1}")
         topology.insert_restraint_top(
             self.work_dir / "grafted_chain.top",
             self.work_dir / "grafted_chain_restraint.top",
-            linker_1based,
+            linker_1,
         )
 
     # ------------------------------------------------------------------
-    # Step 8 – Vacuum GROMACS relaxation
+    # Step 8 – vacuum relaxation
     # ------------------------------------------------------------------
 
     def step_vacuum_relax(self) -> None:
-        """Run vacuum energy minimisation + NVT in GROMACS."""
+        """GROMACS steepest-descent + short NVT in vacuum with hard restraints."""
         cfg = self.config
-        wd = self.work_dir
-        print("\n=== Step 8: Vacuum GROMACS relaxation ===")
+        print("\n=== Step 8: vacuum relaxation (gmx) ===")
+        for name in ("min_vac.mdp", "nvt_vac.mdp"):
+            self._copy_template(name)
 
-        # Copy MDP templates if needed
-        for mdp in ("min_vac.mdp", "nvt_vac.mdp"):
-            src = self.mdp_dir / mdp
-            dst = wd / mdp
-            if not dst.exists() and src.exists():
-                shutil.copy(src, dst)
+        top = "hardrest_grafted_chain_restraint.top"
+        ref = "grafted_chain_shifted.gro"
+        mdrun = f"gmx mdrun -ntmpi {cfg.t_mpi} -ntomp {cfg.t_omp} -v"
 
-        hard_top = wd / "hardrest_grafted_chain_restraint.top"
-        shifted_gro = wd / "grafted_chain_shifted.gro"
-
-        runner.run(
-            f"gmx grompp"
-            f" -f min_vac.mdp"
-            f" -p {hard_top}"
-            f" -c {shifted_gro}"
-            f" -o min_vac.tpr"
-            f" -r {shifted_gro}"
-            f" -maxwarn 2",
-            cwd=wd,
-        )
-        runner.run(
-            f"gmx mdrun -deffnm min_vac"
-            f" -ntmpi {cfg.t_mpi} -ntomp {cfg.t_omp} -v",
-            cwd=wd,
-        )
-
-        runner.run(
-            f"gmx grompp"
-            f" -f nvt_vac.mdp"
-            f" -p {hard_top}"
-            f" -c min_vac.gro"
-            f" -o nvt_vac.tpr"
-            f" -r {shifted_gro}"
-            f" -maxwarn 2",
-            cwd=wd,
-        )
-        runner.run(
-            f"gmx mdrun -deffnm nvt_vac"
-            f" -ntmpi {cfg.t_mpi} -ntomp {cfg.t_omp} -v",
-            cwd=wd,
-        )
+        self._run(f"gmx grompp -f min_vac.mdp -p {top} -c {ref} -r {ref} -o min_vac.tpr -maxwarn 2")
+        self._run(f"{mdrun} -deffnm min_vac")
+        self._run(f"gmx grompp -f nvt_vac.mdp -p {top} -c min_vac.gro -r {ref} -o nvt_vac.tpr -maxwarn 2")
+        self._run(f"{mdrun} -deffnm nvt_vac")
 
     # ------------------------------------------------------------------
-    # Step 9 – Solvation
+    # Step 9 – solvation
     # ------------------------------------------------------------------
 
     def step_solvate(self) -> None:
-        """Solvate the system with TIP3P water."""
-        wd = self.work_dir
-        cfg = self.config
-        print("\n=== Step 9: Solvation with TIP3P water ===")
+        """Solvate with TIP3P, extend the box in z, finalise both topologies."""
+        print("\n=== Step 9: solvation (gmx solvate) ===")
+        hard = "hardrest_grafted_chain_restraint.top"
+        soft = "grafted_chain_restraint.top"
 
-        hard_top = wd / "hardrest_grafted_chain_restraint.top"
+        # gmx solvate appends "SOL N" to the topology passed with -p.
+        self._run(f"gmx solvate -cp nvt_vac.gro -p {hard} -o grafted_chain_water.gro")
+        # The soft topology must carry the same [ molecules ] block.
+        topology.copy_molecules_section(self.work_dir / hard, self.work_dir / soft)
 
-        runner.run(
-            f"gmx solvate"
-            f" -cp {wd / 'nvt_vac.gro'}"
-            f" -p {hard_top}"
-            f" -o {wd / 'grafted_chain_water.gro'}",
+        cell = self._read("grafted_chain_water.gro").cell
+        La, Lb = cell[0, 0] / 10, cell[1, 1] / 10
+        Lc = (cell[2, 2] + 4) / 10                 # +4 Å vacuum gap above the water
+        self._run(
+            f"gmx editconf -f grafted_chain_water.gro -box {La:.6f} {Lb:.6f} {Lc:.6f}"
+            f" -o grafted_chain_water_box.gro"
         )
 
-        from ase.io import read
-        atoms = read(str(wd / "grafted_chain_water.gro"))
-        Lc = (atoms.cell[2, 2] + 4) / 10  # +4 Å headroom, convert to nm
-        La = atoms.cell[0, 0] / 10
-        Lb = atoms.cell[1, 1] / 10
+        topology.insert_tip3p_top(self.work_dir / soft, self.work_dir / "grafted_chain_water_restraint.top")
+        topology.insert_tip3p_top(self.work_dir / hard, self.work_dir / "hardrest_grafted_chain_water_restraint.top")
+        self._copy_template("tip3p.itp")
 
-        runner.run(
-            f"gmx editconf"
-            f" -f {wd / 'grafted_chain_water.gro'}"
-            f" -box {La:.6f} {Lb:.6f} {Lc:.6f}"
-            f" -o {wd / 'grafted_chain_water_box.gro'}",
-        )
+        print("\n=== Done. Files for the MD stage (copy together with 02_MD_template/*.mdp) ===")
+        for name in (
+            "grafted_chain_water_box.gro",
+            "grafted_chain_water_restraint.top",
+            "hardrest_grafted_chain_water_restraint.top",
+            "tip3p.itp",
+        ):
+            print(f"  - {self.work_dir / name}")
 
-        # Patch topologies with TIP3P include
-        topology.insert_tip3p_top(
-            wd / "grafted_chain_restraint.top",
-            wd / "grafted_chain_water_restraint.top",
-        )
-        topology.insert_tip3p_top(
-            wd / "hardrest_grafted_chain_restraint.top",
-            wd / "hardrest_grafted_chain_water_restraint.top",
-        )
+    # ------------------------------------------------------------------
+    # full pipeline
+    # ------------------------------------------------------------------
 
-        print("\n=== Done! ===")
-        print("Necessary files for GROMACS simulation:")
-        print(f"  - {wd / 'grafted_chain_water_box.gro'}")
-        print(f"  - {wd / 'grafted_chain_water_restraint.top'}")
-        print(f"  - {wd / 'hardrest_grafted_chain_water_restraint.top'}")
-        print("  - tip3p.itp  (copy from 02_MD_template/)")
+    STEPS = (
+        "step_prepgen",
+        "step_build_chain",
+        "step_amber_minimize",
+        "step_align_z",
+        "step_graft",
+        "step_assign_ff_grafted",
+        "step_position_restraints",
+        "step_vacuum_relax",
+        "step_solvate",
+    )
+
+    def run(self, start: str | None = None) -> None:
+        """Run the pipeline, optionally starting from the named step.
+
+        Parameters
+        ----------
+        start:
+            Name of a ``step_*`` method to resume from, e.g. ``"step_graft"``.
+            Earlier steps are assumed to have left their outputs in *work_dir*.
+        """
+        steps = list(self.STEPS)
+        if start is not None:
+            if start not in steps:
+                raise ValueError(f"unknown step {start!r}; choose from {steps}")
+            steps = steps[steps.index(start):]
+        for name in steps:
+            getattr(self, name)()
