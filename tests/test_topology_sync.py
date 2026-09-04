@@ -58,14 +58,11 @@ class TestCopyMoleculesSection:
 
 
 class TestBundledTemplates:
-    """The package ships copies of files that also live in the repo; keep them in sync."""
+    """The bundled config templates must match the commented examples in examples/."""
 
     @pytest.mark.parametrize(
         "pkg_name, repo_path",
         [
-            ("min_vac.mdp", "01_FF_template/min_vac.mdp"),
-            ("nvt_vac.mdp", "01_FF_template/nvt_vac.mdp"),
-            ("tip3p.itp", "02_MD_template/tip3p.itp"),
             ("linear_config.yaml", "examples/linear_config.yaml"),
             ("loop_config.yaml", "examples/loop_config.yaml"),
         ],

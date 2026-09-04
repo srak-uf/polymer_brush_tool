@@ -337,7 +337,7 @@ class BrushWorkflowBase:
         topology.insert_tip3p_top(self.work_dir / hard, self.work_dir / "hardrest_grafted_chain_water_restraint.top")
         self._copy_template("tip3p.itp")
 
-        print("\n=== Done. Files for the MD stage (copy together with 02_MD_template/*.mdp) ===")
+        print("\n=== Done. Files for the MD stage (copy together with md_template/*.mdp) ===")
         for name in (
             "grafted_chain_water_box.gro",
             "grafted_chain_water_restraint.top",

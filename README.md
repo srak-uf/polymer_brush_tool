@@ -37,8 +37,7 @@ src/polymer_brush_tool/
     ├── base.py        共通パイプライン（step_* メソッド）
     ├── linear.py      LinearBrushWorkflow
     └── loop.py        LoopBrushWorkflow
-01_FF_template/        min_vac.mdp, nvt_vac.mdp と旧スクリプト（後方互換ラッパー）
-02_MD_template/        本計算用 mdp, tip3p.itp, ジョブスクリプト
+md_template/           本計算用 mdp (min, nvt, anneal, npt) とジョブスクリプト
 examples/              mpc.ac, Gaussian log, 設定ファイルのサンプル
 tests/                 pytest（外部ツール不要）
 ```
@@ -107,7 +106,7 @@ pbuild linear --config my_brush.yaml --work-dir ./out_linear
 pbuild loop   --config my_loop.yaml  --work-dir ./out_loop
 ```
 
-`--mdp-dir` を省略した場合はパッケージ同梱の `min_vac.mdp`, `nvt_vac.mdp`, `tip3p.itp`（`01_FF_template/`, `02_MD_template/` と同一内容）を使います。
+`--mdp-dir` を省略した場合はパッケージ同梱の `min_vac.mdp`, `nvt_vac.mdp`, `tip3p.itp`（`src/polymer_brush_tool/templates/`）を使います。
 
 途中で外部ツールが失敗した場合は、原因を直してから `--start <step>` で途中から再開できます（例: `--start step_graft`）。ステップ名は `pbuild linear --help` を参照してください。
 
@@ -118,7 +117,7 @@ pbuild loop   --config my_loop.yaml  --work-dir ./out_loop
 1. `chain_min_pull.pdb` を VESTA で確認し、基板側の原子 index を入力
 2. リンカー原子の指定。linear は既定値 (Enter または `y`) で通常問題なし。loop は HEAD と TAIL の両末端を `HMP,H1,TMP,H24` のように指定
 
-完了すると次のファイルが出力されます。`02_MD_template/tip3p.itp` と合わせて同じディレクトリに置き、`02_MD_template/` の mdp で本計算に進みます。
+完了すると次のファイルが出力されます（`tip3p.itp` は作業ディレクトリにコピーされます）。`md_template/` の mdp と同じディレクトリに置いて本計算に進みます。
 
 ```
 grafted_chain_water_box.gro
@@ -142,10 +141,6 @@ wf.run()
 # 個別ステップも呼べます
 # wf.step_prepgen(); wf.step_build_chain(); wf.step_amber_minimize(); ...
 ```
-
-### 旧スクリプト
-
-`01_FF_template/prep_chain_linear.py` と `prep_chain_loop.py` は残していますが、中身はライブラリを呼ぶ薄いラッパーです。冒頭の変数を編集して `python3 prep_chain_linear.py` としても動作します。
 
 ## テスト
 

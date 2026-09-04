@@ -26,7 +26,7 @@ antechamber  → mpc.ac (GAFF2 原子タイプ + RESP 電荷)   ← 手作業
 [9] gmx solvate  TIP3P 水で充填、ボックス高さを調整
       │
       ▼
-grafted_chain_water_box.gro + *_restraint.top + tip3p.itp  → 02_MD_template で本計算
+grafted_chain_water_box.gro + *_restraint.top + tip3p.itp  → md_template で本計算
 ```
 
 化学的な設定: 鎖は **基板—HEAD—(MID)ₙ—TAIL** という 3 種の残基で表現します。同じモノマー（例: MPC）でも、結合する側の水素を落として prepgen に渡すため、末端用 HEAD / TAIL と内部用 MID を別残基名（`hmp` / `mmp` / `tmp`）で定義します。
@@ -197,7 +197,7 @@ hardrest_grafted_chain_water_restraint.top   hard restraint (1,000,000)
 tip3p.itp
 ```
 
-これを `02_MD_template/` の mdp と同じ場所に置き、
+これを `md_template/` の mdp と同じ場所に置き、
 
 | mdp | 内容 |
 |---|---|
@@ -256,7 +256,6 @@ wf.run(start="step_graft")    # 途中から
 wf.step_align_z()             # 1 ステップだけ
 ```
 
-旧来の `01_FF_template/prep_chain_linear.py` / `prep_chain_loop.py` も残してあり、冒頭の変数を編集して実行できます（中身はライブラリ呼び出し）。
 
 ---
 
