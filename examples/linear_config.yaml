@@ -1,0 +1,90 @@
+# polymer-brush-tool — linear brush configuration example
+# -------------------------------------------------------
+# MPC (2-methacryloyloxyethyl phosphorylcholine) linear brush
+#
+# Usage:
+#   1. Copy mpc.ac (from antechamber) to the working directory.
+#   2. Run: pbuild linear --config linear_config.yaml --work-dir ./output_linear
+
+topology: linear
+n_mid_repeat_units: 12
+
+# Graft density and simulation box
+rho: 0.45          # chains/nm²
+nx: 2              # chains along x
+ny: 2              # chains along y
+xyratio: 1.0       # y/x ratio of the PACKMOL alignment box only (simulation box is always square)
+
+# GROMACS parallel execution (t_mpi × t_omp = number of CPU cores)
+t_mpi: 8
+t_omp: 1
+
+# C-C backbone bond length (Å)
+d_cc: 1.54
+
+# Height (Å) of the linker atoms above the GROMACS wall (z = 0).
+# The linker is covalently bonded to the substrate, so one bond length (1.5 Å)
+# is the default. 0 would put the linker on the wall itself (numerically safe
+# because of wall-r-linpot, but its bonded neighbours end up inside the
+# repulsive core of the 10-4 wall potential).
+linker_height: 1.5
+
+# Water molecules whose oxygen is below this height (Å) after gmx solvate are
+# deleted. gmx solvate ignores the wall and also fills the slab between the wall
+# and the grafting atoms; ~3 Å is the LJ contact distance of water on the c3 wall.
+# Set 0 to keep all water.
+solvent_min_z: 3.0
+
+# HEAD–TAIL restraint distance (Å) for the sander stretch.
+# null = auto-calculate the extended contour length (d_cc * n_cc_all * 0.8).
+d_polymer: null
+
+# -------------------------------------------------------
+# Monomer definitions
+#
+# View mpc.pdb in VESTA to identify atom names.
+# Each monomer references the same mpc.ac file in this example.
+# -------------------------------------------------------
+
+# HEAD — substrate-facing end (grafting monomer)
+head:
+  resname: hmp
+  ac_file: mpc.ac
+  termname: H1           # atom at the grafting end (stays fixed at z=0)
+  tailname: C2           # atom bonded to the next (MID) residue
+  omitnames: [H24]       # hydrogen removed when forming the inter-residue bond
+  post_tailtype: c3      # GAFF type of the MID atom this bonds to
+  n_cc: 1                # backbone C-C bonds in this monomer
+
+# MID — repeat unit
+mid:
+  resname: mmp
+  ac_file: mpc.ac
+  headname: C11
+  tailname: C2
+  omitnames: [H23, H24]
+  pre_headtype: c3
+  post_tailtype: c3
+  n_cc: 1
+
+# TAIL — free end
+tail:
+  resname: tmp
+  ac_file: mpc.ac
+  termname: H24          # atom at the free end of the chain
+  headname: C11
+  omitnames: [H23]
+  pre_headtype: c3
+  n_cc: 1
+
+# -------------------------------------------------------
+# Interactive prompt overrides
+#
+# Set these to avoid manual input during the run.
+# Leave commented out (null) to be prompted interactively.
+# -------------------------------------------------------
+
+# bottom_atom_index: 37   # 1-based index in chain_min_pull.pdb (inspect in VESTA)
+
+# linker_atoms:           # atoms to restrain at the substrate surface
+#   - {resname: HMP, atomname: H1}
